@@ -1,5 +1,10 @@
 import "server-only";
-import type { ItemInstance } from "@/generated/prisma/client";
+import type { Character, ItemInstance } from "@/generated/prisma/client";
+import { CONSUMABLES, dismantleYield, MATERIALS } from "@/game/items/consumables";
+import { checkEquipItem, EQUIPMENT_SLOTS, type EquipmentSlotId, slotsForCategory } from "@/game/items/equipment";
+import { computeCharacterStats } from "@/game/stats/compute";
+import type { DerivedStats } from "@/game/types";
+import { allocatedFrom, gearFrom, itemStatsFrom } from "@/server/characters/service";
 import { formatAffix } from "@/game/items/affixes";
 import { getBaseItem, ITEM_CATEGORIES, type ItemCategory } from "@/game/items/bases";
 import { canClassUse, implicitValue } from "@/game/items/loot";
@@ -26,9 +31,42 @@ export interface ItemView {
   uniqueEffect: string | null;
   usableByClass: boolean;
   obtainedAt: Date;
+  /** Hueco en el que está equipado (null si está en la mochila). */
+  equippedSlot: EquipmentSlotId | null;
+  /** Polvo abisal que daría al desmontarlo. */
+  dismantleValue: number;
 }
 
-export function toItemView(row: ItemInstance, classId: ClassId): ItemView | null {
+/** Diferencia de estadísticas si se equipa el objeto (calculada en el servidor con las fórmulas únicas). */
+export interface ItemComparison {
+  slot: EquipmentSlotId;
+  /** Nombre del objeto que sustituiría (null si el hueco está vacío). */
+  replaces: string | null;
+  /** Solo las estadísticas que cambian: [antes, después]. */
+  changes: Partial<Record<keyof DerivedStats, [number, number]>>;
+  /** Motivo por el que no se puede equipar (null si se puede). */
+  blocker: string | null;
+}
+
+export interface InventoryItemView extends ItemView {
+  comparison: ItemComparison | null;
+}
+
+export interface EquipmentSlotView {
+  slot: EquipmentSlotId;
+  item: ItemView | null;
+}
+
+export interface InventoryOverview {
+  items: InventoryItemView[];
+  total: number;
+  equipment: EquipmentSlotView[];
+  potions: { quantity: number; max: number; perRun: number };
+  materials: { id: string; name: string; quantity: number }[];
+  craft: { cost: number; materialName: string; canCraft: boolean };
+}
+
+export function toItemView(row: ItemInstance, classId: ClassId, equippedSlot: EquipmentSlotId | null = null): ItemView | null {
   const base = getBaseItem(row.baseItemId);
   if (!base) {
     // Un objeto cuya definición ya no existe no se muestra (y se registra para revisarlo).
@@ -56,6 +94,8 @@ export function toItemView(row: ItemInstance, classId: ClassId): ItemView | null
     uniqueEffect: base.uniqueEffect ?? null,
     usableByClass: canClassUse(classId, base),
     obtainedAt: row.createdAt,
+    equippedSlot,
+    dismantleValue: dismantleYield(row.rarity, row.itemLevel),
   };
 }
 
@@ -69,12 +109,62 @@ export interface InventoryFilter {
 
 export const isItemCategory = (v: unknown): v is ItemCategory => typeof v === "string" && (ITEM_CATEGORIES as readonly string[]).includes(v);
 
-/** Inventario de un personaje propio, con filtros por categoría y rareza mínima. */
-export async function listInventory(userId: string, characterId: string, filter: InventoryFilter = {}): Promise<{ items: ItemView[]; total: number }> {
-  const character = await db.character.findFirst({ where: { id: characterId, userId }, select: { class: true } });
+/** Hueco que ocuparía el objeto al equiparlo sin elegir (el mismo que usa el servicio de equipo). */
+function targetSlot(category: ItemCategory, equipped: Map<EquipmentSlotId, ItemInstance>): EquipmentSlotId {
+  const options = slotsForCategory(category);
+  return options.find((o) => !equipped.has(o)) ?? options[0];
+}
+
+function compare(character: Character, row: ItemInstance, equipped: Map<EquipmentSlotId, ItemInstance>): ItemComparison | null {
+  const base = getBaseItem(row.baseItemId);
+  if (!base) return null;
+  const slot = targetSlot(base.category, equipped);
+  const check = checkEquipItem({ classId: character.class, level: character.level }, base, slot);
+  const current = [...equipped.values()];
+  const replaced = equipped.get(slot) ?? null;
+  const swapped = [...current.filter((i) => i !== replaced), row];
+  const allocated = allocatedFrom(character);
+  const before = computeCharacterStats({ classId: character.class, level: character.level, allocated, gear: gearFrom(current.map(itemStatsFrom)).bonus }).derived;
+  const after = computeCharacterStats({ classId: character.class, level: character.level, allocated, gear: gearFrom(swapped.map(itemStatsFrom)).bonus }).derived;
+  const changes: ItemComparison["changes"] = {};
+  for (const key of Object.keys(before) as (keyof DerivedStats)[]) {
+    if (before[key] !== after[key]) changes[key] = [before[key], after[key]];
+  }
+  return {
+    slot,
+    replaces: replaced ? (getBaseItem(replaced.baseItemId)?.name ?? null) : null,
+    changes,
+    blocker: check.ok ? null : check.error === "WRONG_CLASS" ? "Tu clase no puede usarlo" : check.error === "LEVEL_TOO_LOW" ? `Requiere nivel ${base.requiredLevel}` : "No se puede equipar",
+  };
+}
+
+/**
+ * Inventario de un personaje propio: objetos con filtros por categoría y rareza mínima, la
+ * comparación con lo equipado, el equipo puesto, pociones y materiales.
+ */
+export async function listInventory(userId: string, characterId: string, filter: InventoryFilter = {}): Promise<InventoryOverview> {
+  const character = await db.character.findFirst({ where: { id: characterId, userId } });
   if (!character) throw new DomainError("NOT_FOUND", "Personaje no encontrado.");
-  const rows = await db.itemInstance.findMany({ where: { characterId }, orderBy: { createdAt: "desc" } });
-  const all = rows.map((r) => toItemView(r, character.class)).filter((v): v is ItemView => v !== null);
+  const [rows, slots, consumables, materials] = await Promise.all([
+    db.itemInstance.findMany({ where: { characterId }, orderBy: { createdAt: "desc" } }),
+    db.equipmentSlot.findMany({ where: { characterId } }),
+    db.consumableStack.findMany({ where: { characterId } }),
+    db.materialStack.findMany({ where: { characterId } }),
+  ]);
+  const slotOf = new Map(slots.map((s) => [s.itemInstanceId, s.slot]));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const equipped = new Map<EquipmentSlotId, ItemInstance>();
+  for (const s of slots) {
+    const row = byId.get(s.itemInstanceId);
+    if (row) equipped.set(s.slot, row);
+  }
+
+  const all: InventoryItemView[] = [];
+  for (const r of rows) {
+    const view = toItemView(r, character.class, slotOf.get(r.id) ?? null);
+    if (!view) continue;
+    all.push({ ...view, comparison: view.equippedSlot ? null : compare(character, r, equipped) });
+  }
   let items = all;
   if (filter.category) items = items.filter((i) => i.category === filter.category);
   if (filter.minRarity) {
@@ -82,5 +172,25 @@ export async function listInventory(userId: string, characterId: string, filter:
     items = items.filter((i) => rarityRank(i.rarity) >= min);
   }
   if (filter.sort === "rarity") items = [...items].sort((a, b) => rarityRank(b.rarity) - rarityRank(a.rarity) || b.obtainedAt.getTime() - a.obtainedAt.getTime());
-  return { items, total: all.length };
+
+  const potion = CONSUMABLES.HEALTH_POTION;
+  const potions = consumables.find((c) => c.consumableId === potion.id)?.quantity ?? 0;
+  const dust = materials.find((m) => m.materialId === potion.craftCost.materialId)?.quantity ?? 0;
+  return {
+    items,
+    total: all.length,
+    equipment: EQUIPMENT_SLOTS.map((slot) => ({ slot, item: all.find((i) => i.equippedSlot === slot) ?? null })),
+    potions: { quantity: potions, max: potion.maxStack, perRun: potion.perRun },
+    materials: Object.values(MATERIALS).map((m) => ({ id: m.id, name: m.name, quantity: materials.find((x) => x.materialId === m.id)?.quantity ?? 0 })),
+    craft: { cost: potion.craftCost.quantity, materialName: MATERIALS[potion.craftCost.materialId].name, canCraft: dust >= potion.craftCost.quantity && potions < potion.maxStack },
+  };
+}
+
+/** Pociones que tiene un personaje propio (0 si no es suyo o no tiene). */
+export async function getPotionCount(userId: string, characterId: string): Promise<number> {
+  const stack = await db.consumableStack.findFirst({
+    where: { characterId, consumableId: CONSUMABLES.HEALTH_POTION.id, character: { userId } },
+    select: { quantity: true },
+  });
+  return stack?.quantity ?? 0;
 }

@@ -10,7 +10,18 @@ import type { BossEntity, EnemyEntity, PlayerEntity, SimState } from "./types";
 /** Tira el daño saliente de un jugador (variación y crítico con el generador del estado). */
 export function rollPlayerDamage(state: SimState, player: PlayerEntity, multiplier: number, damageType: "PHYSICAL" | "MAGIC") {
   const base = damageType === "PHYSICAL" ? player.stats.physicalDamage : player.stats.magicDamage;
-  return rollOutgoingDamage(base, multiplier, player.stats.critChance, player.stats.critMultiplier, rand(state), rand(state));
+  // Potenciado (habilidades) y la bonificación pendiente del siguiente golpe (efecto único) se multiplican.
+  const bonus = (1 + statusValue(player.statuses, "EMPOWERED")) * (1 + player.nextHitBonus);
+  return rollOutgoingDamage(base, multiplier * bonus, player.stats.critChance, player.stats.critMultiplier, rand(state), rand(state));
+}
+
+/** Cura a un jugador sin superar su vida máxima. Devuelve lo curado. */
+export function healPlayer(state: SimState, player: PlayerEntity, amount: number, emit = true): number {
+  if (player.life !== "ALIVE" || amount <= 0) return 0;
+  const healed = Math.min(player.maxHp - player.hp, Math.round(amount));
+  player.hp += healed;
+  if (emit) state.events.push({ type: "HEAL", targetId: player.id, amount: healed, pos: { ...player.pos } });
+  return healed;
 }
 
 function gainOnHit(player: PlayerEntity) {
@@ -69,7 +80,22 @@ export function damagePlayer(state: SimState, player: PlayerEntity, amount: numb
   }
   const reductions = [player.stats.damageReduction];
   if (hasStatus(player.statuses, "FORTIFIED")) reductions.push(statusValue(player.statuses, "FORTIFIED"));
-  const dealt = Math.min(player.hp, mitigate(amount, reductions));
+  let mitigated = mitigate(amount, reductions);
+  // La barrera absorbe primero; si se agota, desaparece.
+  const barrier = player.statuses.find((s) => s.id === "BARRIER");
+  if (barrier && barrier.value > 0) {
+    const absorbed = Math.min(barrier.value, mitigated);
+    barrier.value -= absorbed;
+    mitigated -= absorbed;
+    if (barrier.value <= 0) player.statuses = player.statuses.filter((s) => s !== barrier);
+    state.events.push({ type: "ABSORBED", targetId: player.id, amount: absorbed, pos: { ...player.pos } });
+    if (mitigated <= 0) {
+      player.lastHurtTick = state.tick;
+      if (stunSeconds > 0) applyStatus(player.statuses, "STUN", secondsToTicks(stunSeconds));
+      return true;
+    }
+  }
+  const dealt = Math.min(player.hp, mitigated);
   player.hp -= dealt;
   player.lastHurtTick = state.tick;
   state.summary.damageTaken += dealt;

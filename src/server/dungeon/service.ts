@@ -3,6 +3,9 @@ import { randomInt } from "node:crypto";
 import { type DungeonRun, Prisma } from "@/generated/prisma/client";
 import { MAX_FLOOR, floorRules } from "@/game/dungeon/floors";
 import { generateFloorLoot } from "@/game/items/loot";
+import { CONSUMABLES, potionsForRun, potionsFoundOnFloor } from "@/game/items/consumables";
+import { emptyGear } from "@/game/items/equipment";
+import { LOADOUT_SLOTS } from "@/game/skills/rules";
 import { applyExperience } from "@/game/progression/experience";
 import { MAX_SEED } from "@/game/random/rng";
 import { computeFloorXp } from "@/game/rewards/experience";
@@ -13,7 +16,9 @@ import type { ClassId } from "@/game/types";
 import { BALANCE } from "@/game/balance";
 import { affixesSchema } from "@/lib/validation/items";
 import { allocatedSnapshotSchema, type RunOutcome, runOutcomeSchema, type SubmitRunInput } from "@/lib/validation/run";
-import { allocatedFrom } from "@/server/characters/service";
+import { gearSnapshotSchema, loadoutSnapshotSchema } from "@/lib/validation/progression";
+import { allocatedFrom, gearFrom, loadEquippedItems } from "@/server/characters/service";
+import { loadLoadout } from "@/server/skills/service";
 import { db } from "@/server/db";
 import { DomainError } from "@/server/errors";
 import { withSerializableRetry } from "@/server/transactions";
@@ -55,17 +60,48 @@ export function unlockedFloors(highestFloorCleared: number): number[] {
   return Array.from({ length: max }, (_, i) => i + 1);
 }
 
-/** Configuración de simulación reconstruida SOLO con datos del servidor. */
+/**
+ * Configuración de simulación reconstruida SOLO con datos del servidor: la instantánea tomada al
+ * empezar (nivel, puntos, habilidades equipadas con su rango, bonificación del equipo y pociones).
+ */
 function buildSimConfig(run: DungeonRun, character: { id: string; name: string; class: ClassId }): SimConfig {
   const allocated = allocatedSnapshotSchema.parse(run.allocatedAtStart);
-  const stats = computeCharacterStats({ classId: character.class, level: run.levelAtStart, allocated });
+  const loadout = run.loadoutAtStart === null ? LOADOUT_SLOTS.map(() => null) : loadoutSnapshotSchema.parse(run.loadoutAtStart);
+  const gear = run.gearAtStart === null ? { bonus: emptyGear(), uniqueEffects: [] } : gearSnapshotSchema.parse(run.gearAtStart);
+  const stats = computeCharacterStats({ classId: character.class, level: run.levelAtStart, allocated, gear: gear.bonus });
   return {
     version: run.simVersion,
     seed: run.seed,
     floor: run.floor,
     difficulty: run.difficulty,
-    players: [{ id: character.id, name: character.name, classId: character.class, level: run.levelAtStart, stats: stats.derived }],
+    players: [
+      {
+        id: character.id,
+        name: character.name,
+        classId: character.class,
+        level: run.levelAtStart,
+        stats: stats.derived,
+        loadout,
+        potions: run.potionsAtStart,
+        uniqueEffects: gear.uniqueEffects,
+      },
+    ],
   };
+}
+
+/**
+ * Suma (o resta) pociones con una única sentencia atómica que respeta el tope y nunca baja de 0.
+ * Se usa dentro de la transacción que cierra el intento.
+ */
+async function adjustPotions(tx: Prisma.TransactionClient, characterId: string, delta: number) {
+  if (delta === 0) return;
+  const potion = CONSUMABLES.HEALTH_POTION;
+  await tx.consumableStack.upsert({
+    where: { characterId_consumableId: { characterId, consumableId: potion.id } },
+    create: { characterId, consumableId: potion.id, quantity: 0 },
+    update: {},
+  });
+  await tx.$executeRaw`UPDATE "ConsumableStack" SET "quantity" = LEAST(${potion.maxStack}::int, GREATEST(0, "quantity" + ${delta}::int)) WHERE "characterId" = ${characterId} AND "consumableId" = ${potion.id}`;
 }
 
 /**
@@ -86,6 +122,12 @@ export async function startRun(userId: string, input: { characterId: string; flo
             where: { characterId: character.id, status: "ACTIVE" },
             data: { status: "ABANDONED", endedAt: new Date() },
           });
+          // Instantánea de la progresión: cambiar habilidades o equipo después no altera esta partida.
+          const [loadout, equipped, potions] = await Promise.all([
+            loadLoadout(tx, character.id, character.class),
+            loadEquippedItems(tx, character.id),
+            tx.consumableStack.findUnique({ where: { characterId_consumableId: { characterId: character.id, consumableId: CONSUMABLES.HEALTH_POTION.id } } }),
+          ]);
           const run = await tx.dungeonRun.create({
             data: {
               characterId: character.id,
@@ -96,6 +138,9 @@ export async function startRun(userId: string, input: { characterId: string; flo
               simVersion: SIM_VERSION,
               levelAtStart: character.level,
               allocatedAtStart: allocatedFrom(character),
+              loadoutAtStart: loadoutSnapshotSchema.parse(loadout),
+              gearAtStart: gearSnapshotSchema.parse(gearFrom(equipped)),
+              potionsAtStart: potionsForRun(potions?.quantity ?? 0),
             },
           });
           return { runId: run.id };
@@ -122,6 +167,11 @@ async function findOwnedRun(userId: string, runId: string) {
 export async function getRunForPlay(userId: string, runId: string): Promise<RunPlayView | null> {
   const run = await findOwnedRun(userId, runId);
   if (!run || run.status !== "ACTIVE") return null;
+  if (run.simVersion !== SIM_VERSION) {
+    // Empezado con otras reglas: no se podría validar. Se abandona sin penalización.
+    await abandonRun(userId, run.id);
+    return null;
+  }
   return { id: run.id, characterId: run.characterId, characterName: run.character.name, floor: run.floor, config: buildSimConfig(run, run.character) };
 }
 
@@ -194,13 +244,19 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
     damageDealt: state.summary.damageDealt,
     damageTaken: state.summary.damageTaken,
     dodges: state.summary.dodges,
+    // Pociones bebidas según la repetición (nunca más de las que llevaba: lo limita la simulación).
+    potionsUsed: Math.min(run.potionsAtStart, state.summary.potionsUsed),
   };
 
   if (!victory) {
-    const outcome: RunOutcome = { ...baseOutcome, xp: null, levelBefore: character.level, levelAfter: character.level, itemsLost: 0 };
-    await db.dungeonRun.updateMany({
-      where: { id: run.id, status: "ACTIVE" },
-      data: { status: "FAILED", outcome: runOutcomeSchema.parse(outcome), ticks: result.ticks, endedAt: new Date() },
+    const outcome: RunOutcome = { ...baseOutcome, xp: null, levelBefore: character.level, levelAfter: character.level, itemsLost: 0, potionsFound: 0 };
+    await db.$transaction(async (tx) => {
+      const closed = await tx.dungeonRun.updateMany({
+        where: { id: run.id, status: "ACTIVE" },
+        data: { status: "FAILED", outcome: runOutcomeSchema.parse(outcome), ticks: result.ticks, endedAt: new Date() },
+      });
+      // Solo quien cierra el intento descuenta las pociones (un reenvío no las descuenta otra vez).
+      if (closed.count === 1) await adjustPotions(tx, character.id, -baseOutcome.potionsUsed);
     });
     return (await getRunResult(userId, run.id)) ?? fail();
   }
@@ -259,7 +315,18 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
         });
       }
 
-      const outcome: RunOutcome = { ...baseOutcome, xp, levelBefore: current.level, levelAfter: progress.level, itemsLost: drops.length - kept.length };
+      // 5) Pociones: se descuentan las bebidas y se suman las encontradas (con tope).
+      const potionsFound = potionsFoundOnFloor(rules.boss !== null);
+      await adjustPotions(tx, character.id, potionsFound - baseOutcome.potionsUsed);
+
+      const outcome: RunOutcome = {
+        ...baseOutcome,
+        xp,
+        levelBefore: current.level,
+        levelAfter: progress.level,
+        itemsLost: drops.length - kept.length,
+        potionsFound,
+      };
       await tx.dungeonRun.update({ where: { id: run.id }, data: { outcome: runOutcomeSchema.parse(outcome) } });
     });
   } catch (error) {

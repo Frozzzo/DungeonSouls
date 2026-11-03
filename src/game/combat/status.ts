@@ -1,5 +1,5 @@
-/** Estados alterados de la Fase 2. Duraciones en ticks dentro de la simulación. */
-export const STATUS_IDS = ["SLOW", "STUN", "FORTIFIED"] as const;
+/** Estados alterados. Duraciones en ticks dentro de la simulación. */
+export const STATUS_IDS = ["SLOW", "STUN", "FORTIFIED", "BARRIER", "EMPOWERED", "REGEN"] as const;
 export type StatusId = (typeof STATUS_IDS)[number];
 
 export interface StatusDefinition {
@@ -16,13 +16,16 @@ export interface StatusDefinition {
 export const STATUS_DEFINITIONS: Record<StatusId, StatusDefinition> = {
   SLOW: { id: "SLOW", name: "Ralentizado", description: "Te mueves un 40 % más despacio.", moveMultiplier: 0.6, incapacitates: false, negative: true },
   STUN: { id: "STUN", name: "Aturdido", description: "No puedes actuar.", moveMultiplier: 0, incapacitates: true, negative: true },
-  FORTIFIED: { id: "FORTIFIED", name: "Bastión", description: "Recibes la mitad de daño.", moveMultiplier: 1, incapacitates: false, negative: false },
+  FORTIFIED: { id: "FORTIFIED", name: "Bastión", description: "Recibes menos daño.", moveMultiplier: 1, incapacitates: false, negative: false },
+  BARRIER: { id: "BARRIER", name: "Barrera", description: "Absorbe daño antes de que llegue a tu vida.", moveMultiplier: 1, incapacitates: false, negative: false },
+  EMPOWERED: { id: "EMPOWERED", name: "Potenciado", description: "Infliges más daño.", moveMultiplier: 1, incapacitates: false, negative: false },
+  REGEN: { id: "REGEN", name: "Renovación", description: "Recuperas vida poco a poco.", moveMultiplier: 1, incapacitates: false, negative: false },
 };
 
 export interface ActiveStatus {
   id: StatusId;
   ticks: number;
-  /** Magnitud específica (p. ej. reducción de FORTIFIED). */
+  /** Magnitud específica (reducción de FORTIFIED, absorción restante de BARRIER, curación por pulso de REGEN...). */
   value: number;
 }
 

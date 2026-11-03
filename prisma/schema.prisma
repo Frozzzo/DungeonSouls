@@ -1,4 +1,4 @@
-// Esquema de las fases 1 (fundación) y 2 (combate). El diseño completo de todas las fases está en docs/modelo-datos.md.
+// Esquema de las fases 1 (fundación), 2 (combate) y 3 (progresión). El diseño completo de todas las fases está en docs/modelo-datos.md.
 
 generator client {
   provider = "prisma-client"
@@ -91,12 +91,101 @@ model Character {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   runs         DungeonRun[]
   rewardGrants RewardGrant[]
   items        ItemInstance[]
+  skills       CharacterSkill[]
+  loadout      CharacterLoadoutSlot[]
+  equipment    EquipmentSlot[]
+  consumables  ConsumableStack[]
+  materials    MaterialStack[]
 
   @@index([userId])
+}
+
+/// Rango de una habilidad aprendida. La definición vive en src/game/skills; aquí solo el progreso.
+model CharacterSkill {
+  id          String   @id @default(cuid())
+  characterId String
+  /// Id estable de la habilidad en el código ("tank-bulwark").
+  skillId     String
+  /// 1..maxRank de la definición (validado en el servicio; la BD exige ≥ 1).
+  rank        Int
+  unlockedAt  DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, skillId])
+}
+
+enum SkillSlot {
+  BASIC_1
+  BASIC_2
+  BASIC_3
+  ULTIMATE
+}
+
+/// Habilidades equipadas: como máximo una por hueco (4 en total) y sin repetir.
+model CharacterLoadoutSlot {
+  id          String    @id @default(cuid())
+  characterId String
+  slot        SkillSlot
+  skillId     String
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, slot])
+  @@unique([characterId, skillId])
+}
+
+enum EquipmentSlotId {
+  WEAPON
+  HELMET
+  CHEST
+  GLOVES
+  LEGS
+  BOOTS
+  ACCESSORY_1
+  ACCESSORY_2
+}
+
+/// Objeto equipado en un hueco. Un objeto solo puede estar en un hueco y no se puede borrar mientras está puesto.
+model EquipmentSlot {
+  id             String          @id @default(cuid())
+  characterId    String
+  slot           EquipmentSlotId
+  itemInstanceId String          @unique
+
+  character Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  item      ItemInstance @relation(fields: [itemInstanceId], references: [id], onDelete: NoAction)
+
+  @@unique([characterId, slot])
+}
+
+/// Consumibles apilables (pociones). `quantity` tiene tope por tipo (src/game/items/consumables.ts).
+model ConsumableStack {
+  id           String @id @default(cuid())
+  characterId  String
+  consumableId String
+  quantity     Int    @default(0)
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, consumableId])
+}
+
+/// Materiales obtenidos al desmontar objetos.
+model MaterialStack {
+  id          String @id @default(cuid())
+  characterId String
+  materialId  String
+  quantity    Int    @default(0)
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, materialId])
 }
 
 enum Difficulty {
@@ -136,6 +225,12 @@ model DungeonRun {
   /// Instantánea del personaje al empezar (nivel y puntos asignados), validada con Zod.
   levelAtStart     Int
   allocatedAtStart Json
+  /// Habilidades equipadas al empezar [{ skillId, rank } | null] × 4 (validado con Zod).
+  loadoutAtStart   Json?
+  /// Bonificación del equipo y efectos únicos al empezar (validado con Zod).
+  gearAtStart      Json?
+  /// Pociones con las que entra (ya limitadas por pociones por piso).
+  potionsAtStart   Int        @default(0)
   status      RunStatus  @default(ACTIVE)
   /// Envíos rechazados (entradas incompletas); al superar el máximo, el intento se abandona.
   rejectedSubmissions Int @default(0)
@@ -181,8 +276,9 @@ model ItemInstance {
   sourceRewardGrantId String?
   createdAt   DateTime   @default(now())
 
-  character   Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  sourceGrant RewardGrant? @relation(fields: [sourceRewardGrantId], references: [id], onDelete: SetNull)
+  character   Character      @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  sourceGrant RewardGrant?   @relation(fields: [sourceRewardGrantId], references: [id], onDelete: SetNull)
+  equippedIn  EquipmentSlot?
 
   @@index([characterId, createdAt])
 }

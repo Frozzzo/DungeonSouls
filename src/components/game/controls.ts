@@ -1,12 +1,17 @@
 import { quantizeDirection } from "@/game/simulation/input";
-import { BUTTON_ABILITY, BUTTON_ATTACK, BUTTON_DODGE, type PlayerInput } from "@/game/simulation/types";
+import { BUTTON_ATTACK, BUTTON_DODGE, BUTTON_POTION, type PlayerInput, SKILL_BUTTONS } from "@/game/simulation/types";
+
+/** Teclas de los huecos de habilidad (BASIC_1..3, ULTIMATE) y de la poción. */
+export const SKILL_KEYS = ["q", "e", "r", "f"] as const;
+export const POTION_KEY = "1";
 
 /**
  * Traduce teclado, ratón y controles táctiles en intenciones de la simulación.
  * Solo produce intenciones (dirección, apuntado, botones): nunca toca el estado del juego.
  *
  * Escritorio: WASD/flechas para moverse, ratón para apuntar, clic izquierdo o J para atacar,
- * Espacio/Mayús/K para esquivar y Q/E/clic derecho/L para la habilidad.
+ * Espacio/Mayús/K para esquivar, Q/E/R para las habilidades (clic derecho = Q), F para la
+ * definitiva y 1 para beber una poción.
  */
 export class InputController {
   private keys = new Set<string>();
@@ -14,7 +19,8 @@ export class InputController {
   private mouseDown = false;
   private lastMouseMove = 0;
   private pendingDodge = false;
-  private pendingAbility = false;
+  private pendingSkills = [false, false, false, false];
+  private pendingPotion = false;
   /** Estado de los controles táctiles (lo actualiza el componente TouchControls). */
   private touch = { moveX: 0, moveY: 0, attack: false, active: false };
   private cleanup: Array<() => void> = [];
@@ -26,7 +32,9 @@ export class InputController {
       if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
       if (!e.repeat) {
         if (k === " " || k === "shift" || k === "k") this.pendingDodge = true;
-        if (k === "q" || k === "e" || k === "l") this.pendingAbility = true;
+        const slot = (SKILL_KEYS as readonly string[]).indexOf(k);
+        if (slot >= 0) this.pendingSkills[slot] = true;
+        if (k === POTION_KEY) this.pendingPotion = true;
       }
       this.keys.add(k);
     };
@@ -42,7 +50,7 @@ export class InputController {
     };
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) this.mouseDown = true;
-      if (e.button === 2) this.pendingAbility = true;
+      if (e.button === 2) this.pendingSkills[0] = true;
       onMouseMove(e);
     };
     const onMouseUp = (e: MouseEvent) => {
@@ -88,8 +96,12 @@ export class InputController {
     this.pendingDodge = true;
   }
 
-  pressAbility() {
-    this.pendingAbility = true;
+  pressSkill(slot: number) {
+    if (slot >= 0 && slot < this.pendingSkills.length) this.pendingSkills[slot] = true;
+  }
+
+  pressPotion() {
+    this.pendingPotion = true;
   }
 
   /**
@@ -116,9 +128,13 @@ export class InputController {
     let buttons = 0;
     if (this.mouseDown || k.has("j") || this.touch.attack) buttons |= BUTTON_ATTACK;
     if (this.pendingDodge) buttons |= BUTTON_DODGE;
-    if (this.pendingAbility) buttons |= BUTTON_ABILITY;
+    this.pendingSkills.forEach((pressed, slot) => {
+      if (pressed) buttons |= SKILL_BUTTONS[slot];
+    });
+    if (this.pendingPotion) buttons |= BUTTON_POTION;
     this.pendingDodge = false;
-    this.pendingAbility = false;
+    this.pendingSkills = [false, false, false, false];
+    this.pendingPotion = false;
     return { mx: move.x, my: move.y, ax: aim.x, ay: aim.y, buttons };
   }
 }

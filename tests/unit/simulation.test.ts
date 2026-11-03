@@ -5,7 +5,7 @@ import { createInitialState, spawnEnemy } from "@/game/simulation/create";
 import { encodeInputs, iterateInputs, sanitizeInput } from "@/game/simulation/input";
 import { replay } from "@/game/simulation/replay";
 import { step, stepInPlace } from "@/game/simulation/step";
-import { BUTTON_ABILITY, BUTTON_ATTACK, BUTTON_DODGE, IDLE_INPUT, type PlayerInput, type SimState } from "@/game/simulation/types";
+import { BUTTON_SKILL_1, BUTTON_ATTACK, BUTTON_DODGE, IDLE_INPUT, type PlayerInput, type SimState } from "@/game/simulation/types";
 import type { EnemyKindId } from "@/game/enemies/definitions";
 import type { ClassId } from "@/game/types";
 import { playWithBot, testConfig } from "../support/sim";
@@ -64,18 +64,18 @@ describe("simulación: ataques y enfriamientos", () => {
     const p = state.players[0];
     p.hp = 50;
     const mana = p.resource;
-    run(1, input({ buttons: BUTTON_ABILITY }));
+    run(1, input({ buttons: BUTTON_SKILL_1 }));
     expect(p.hp).toBeGreaterThan(50);
     expect(p.resource).toBeLessThan(mana);
     const afterFirst = p.hp;
-    run(5, input({ buttons: BUTTON_ABILITY }));
+    run(5, input({ buttons: BUTTON_SKILL_1 }));
     expect(p.hp).toBe(afterFirst); // en enfriamiento
-    expect(p.abilityCooldown).toBeGreaterThan(0);
+    expect(p.skillCooldowns[0]).toBeGreaterThan(0);
 
     const fresh = arena("HEALER");
     fresh.state.players[0].resource = 0;
     fresh.state.players[0].hp = 50;
-    fresh.run(1, input({ buttons: BUTTON_ABILITY }));
+    fresh.run(1, input({ buttons: BUTTON_SKILL_1 }));
     expect(fresh.state.players[0].hp).toBe(50); // sin maná no hay curación
   });
 
@@ -83,7 +83,7 @@ describe("simulación: ataques y enfriamientos", () => {
     const { state, run } = arena("HEALER");
     const p = state.players[0];
     p.hp = p.maxHp - 1;
-    run(1, input({ buttons: BUTTON_ABILITY }));
+    run(1, input({ buttons: BUTTON_SKILL_1 }));
     expect(p.hp).toBe(p.maxHp);
   });
 });
@@ -108,7 +108,7 @@ describe("simulación: mitigación, esquiva y muerte", () => {
     const takeHit = (fortify: boolean) => {
       const { state, add, run } = arena("TANK");
       state.players[0].resource = 100;
-      if (fortify) run(1, input({ buttons: BUTTON_ABILITY }));
+      if (fortify) run(1, input({ buttons: BUTTON_SKILL_1 }));
       const before = state.players[0].hp;
       add("STALKER", 0.9, 0);
       run(secondsToTicks(0.6));
@@ -234,7 +234,7 @@ describe("simulación: determinismo y entradas", () => {
     const segs = encodeInputs(inputs);
     expect(segs).toHaveLength(3);
     expect([...iterateInputs(segs)]).toEqual(inputs);
-    expect(sanitizeInput({ mx: 5000, my: -5000, ax: 3.7, ay: 0, buttons: 0xff })).toEqual({ mx: 100, my: -100, ax: 4, ay: 0, buttons: 7 });
+    expect(sanitizeInput({ mx: 5000, my: -5000, ax: 3.7, ay: 0, buttons: 0xff })).toEqual({ mx: 100, my: -100, ax: 4, ay: 0, buttons: 127 });
   });
 
   it("el piloto automático completa los pisos 1 a 4 con un personaje de nivel 1", () => {
