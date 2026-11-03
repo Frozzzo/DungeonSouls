@@ -49,6 +49,14 @@ npm run build && npm run test:e2e
 
 Las pruebas E2E envían una cabecera `x-real-ip` distinta en cada prueba para no chocar con el límite de registros por IP.
 
+La prueba E2E que completa un piso usa el piloto automático, que solo existe si se compila con `NEXT_PUBLIC_E2E_AUTOPILOT=1`:
+
+```bash
+NEXT_PUBLIC_E2E_AUTOPILOT=1 npm run build && npm run test:e2e
+```
+
+No definas esa variable en Vercel: en producción el piloto no se incluye y `?autopilot=1` no hace nada.
+
 ## Despliegue en Vercel
 
 1. **Importar el repositorio** en Vercel (framework detectado: Next.js).
@@ -60,6 +68,7 @@ Las pruebas E2E envían una cabecera `x-real-ip` distinta en cada prueba para no
 5. **Comprobar** tras desplegar:
    - `GET https://<tu-dominio>/api/health` → `{"status":"ok","database":"ok"}`. Si devuelve 503, la base de datos no es accesible (revisa `DATABASE_URL` y SSL).
    - Registro → crear personaje → asignar puntos → cerrar sesión → iniciar sesión.
+   - Entrar al piso 1, completarlo y comprobar que aparecen la XP, el botín en el inventario y el piso 2 desbloqueado.
 
 > En las Preview Deployments, apunta `DATABASE_URL` a una rama o base de datos distinta de producción (Neon crea ramas por despliegue de vista previa si activas la integración), para que las migraciones de una rama no afecten a producción.
 
@@ -76,4 +85,4 @@ Aún no forma parte del despliegue. Se documentará aquí cuando exista: Worker 
 
 ## Integración continua
 
-`.github/workflows/ci.yml` levanta Postgres 16 y ejecuta lint, typecheck, pruebas unitarias, de integración, build y E2E en cada PR y en `main`.
+`.github/workflows/ci.yml` levanta Postgres 16 y ejecuta lint, typecheck, pruebas unitarias, de integración, build (con el piloto automático de pruebas) y E2E en cada PR y en `main`.

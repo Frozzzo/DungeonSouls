@@ -8,6 +8,7 @@ import type { Attributes, ClassId } from "@/game/types";
 import type { AllocateStatsInput, CreateCharacterInput } from "@/lib/validation/character";
 import { db } from "@/server/db";
 import { DomainError } from "@/server/errors";
+import { withSerializableRetry } from "@/server/transactions";
 
 /** Vista segura de un personaje: lo que la interfaz necesita, con estadísticas calculadas en el servidor. */
 export interface CharacterView {
@@ -19,6 +20,7 @@ export interface CharacterView {
   experienceToNext: number;
   statPoints: number;
   skillPoints: number;
+  highestFloorCleared: number;
   allocated: Attributes;
   stats: CharacterStats;
   createdAt: Date;
@@ -44,6 +46,7 @@ export function toCharacterView(c: Character): CharacterView {
     experienceToNext: xpToNextLevel(c.level),
     statPoints: c.statPoints,
     skillPoints: c.skillPoints,
+    highestFloorCleared: c.highestFloorCleared,
     allocated,
     stats: computeCharacterStats({ classId: c.class, level: c.level, allocated }),
     createdAt: c.createdAt,
@@ -66,26 +69,28 @@ export async function getOwnedCharacter(userId: string, characterId: string): Pr
 export async function createCharacter(userId: string, input: CreateCharacterInput): Promise<CharacterView> {
   try {
     // Transacción serializable: el recuento y la creación no pueden intercalarse con otra petición.
-    const row = await db.$transaction(
-      async (tx) => {
-        const count = await tx.character.count({ where: { userId } });
-        if (count >= BALANCE.characters.maxPerUser) {
-          throw new DomainError(
-            "CHARACTER_LIMIT",
-            `Has alcanzado el máximo de ${BALANCE.characters.maxPerUser} personajes.`,
-          );
-        }
-        return tx.character.create({
-          data: {
-            userId,
-            name: input.name,
-            nameKey: nameKeyOf(input.name),
-            class: input.classId,
-            statPoints: BALANCE.progression.startingStatPoints,
-          },
-        });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    const row = await withSerializableRetry(() =>
+      db.$transaction(
+        async (tx) => {
+          const count = await tx.character.count({ where: { userId } });
+          if (count >= BALANCE.characters.maxPerUser) {
+            throw new DomainError(
+              "CHARACTER_LIMIT",
+              `Has alcanzado el máximo de ${BALANCE.characters.maxPerUser} personajes.`,
+            );
+          }
+          return tx.character.create({
+            data: {
+              userId,
+              name: input.name,
+              nameKey: nameKeyOf(input.name),
+              class: input.classId,
+              statPoints: BALANCE.progression.startingStatPoints,
+            },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
     );
     return toCharacterView(row);
   } catch (error) {

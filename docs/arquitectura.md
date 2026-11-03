@@ -98,6 +98,9 @@ Un ARPG de mazmorras **cooperativo online** (hasta 4 jugadores) con progresión 
 - **ADR-07. Cache Components desactivado en la Fase 1.** Casi todas las pantallas dependen de la sesión y son dinámicas; activarlo exige límites `<Suspense>` y directivas de caché en cada lectura de sesión sin beneficio real ahora. Se puede activar más adelante para páginas públicas.
 - **ADR-08. Se guardan los puntos asignados, no las estadísticas finales.** La tabla `Character` guarda nivel, XP, puntos libres y puntos asignados por atributo. Atributos totales y estadísticas derivadas se calculan siempre con `computeCharacterStats`, así no pueden desincronizarse ni manipularse.
 - **ADR-09. Cinco puntos de atributo iniciales.** Así el sistema de estadísticas se puede usar desde la Fase 1, antes de que exista XP por combate. Valor configurable en `BALANCE.progression.startingStatPoints`.
+- **ADR-10. Validación por repetición en la Fase 2 (un jugador).** Mientras no existe el servidor de partida (Fase 4), el cliente ejecuta la simulación y graba solo sus **intenciones** por tick (dirección, apuntado, botones). Al terminar las envía; el servidor reconstruye la partida con la semilla, la dificultad y la instantánea del personaje que guardó al empezar, la **vuelve a ejecutar** con el mismo `src/game/simulation` y solo concede XP y botín si el resultado es una victoria. El cliente nunca envía daño, XP, posiciones ni resultados (el esquema es estricto). Para que la repetición sea exacta: paso fijo de 1/20 s, generador aleatorio de enteros de 32 bits guardado en el estado, ejes de entrada enteros y ninguna función trigonométrica en las reglas (solo `+ - * / sqrt`, cuyos resultados fija IEEE 754 en todos los motores). En la Fase 4 el mismo `step` corre dentro del Durable Object y la repetición deja de ser necesaria para el cooperativo. Un jugador podría usar un bot para jugar por él; se acepta (no puede inventar resultados, solo jugar).
+- **ADR-11. Recompensas idempotentes.** Cerrar el intento (`ACTIVE → COMPLETED` con escritura condicional), aplicar la XP (escritura condicional sobre nivel y XP leídos), crear `RewardGrant` (clave única `run:<intento>:<personaje>`) y crear los objetos ocurren en una única transacción. Un reenvío, incluso simultáneo, devuelve el mismo resultado sin conceder nada más.
+- **ADR-12. Piloto automático solo en pruebas.** `src/game/simulation/bot.ts` juega usando solo lo que vería un jugador (telegráficos con ~300 ms de reacción). Lo usan las pruebas (derrotar al jefe con una secuencia de entradas fija y reproducible) y la prueba E2E que completa un piso. En el navegador solo existe si se compila con `NEXT_PUBLIC_E2E_AUTOPILOT=1` (lo hace la CI; nunca en Vercel).
 
 ---
 
@@ -133,17 +136,21 @@ Estado actual (Fase 1) y lo previsto para las siguientes fases, en cursiva.
 │   │   ├── progression/          experience.ts (curva y subida de nivel)
 │   │   ├── difficulty/           definiciones de las 4 dificultades
 │   │   ├── skills/               (F3) definiciones, árbol, rangos, equipables
-│   │   ├── items/                (F2–3) bases, rarezas, afijos, restricciones
-│   │   ├── combat/               (F2) daño, mitigación, estados, enfriamientos
-│   │   ├── enemies/, bosses/     (F2, F5) definiciones y patrones
-│   │   ├── dungeon/              (F2) generación con semilla y validación de mapas
-│   │   └── simulation/           (F2) bucle de simulación determinista por ticks
+│   │   ├── items/                bases, 6 rarezas, afijos, restricciones de clase, botín
+│   │   ├── combat/               kits de clase, daño, mitigación, estados
+│   │   ├── enemies/, bosses/     definiciones y patrones (más contenido en F5)
+│   │   ├── dungeon/              generación con semilla, reglas por piso y validación de mapas
+│   │   ├── math/, random/        vectores sin trigonometría y generador determinista
+│   │   ├── rewards/              XP de piso con penalización por diferencia de nivel
+│   │   └── simulation/           step() por ticks, IA, entradas RLE, repetición, piloto (pruebas)
 │   ├── lib/validation/           esquemas Zod compartidos
 │   ├── server/                   SOLO servidor ("server-only")
 │   │   ├── db.ts, errors.ts
 │   │   ├── auth/                 contraseñas, sesiones, límites, usuario actual
 │   │   ├── characters/service.ts
-│   │   ├── inventory/, skills/   (F3)
+│   │   ├── dungeon/service.ts    intentos de piso, repetición y recompensas idempotentes
+│   │   ├── inventory/service.ts  inventario con filtros
+│   │   ├── skills/               (F3)
 │   │   ├── parties/, expeditions/, rewards/  (F4)
 │   │   └── realtime/             (F4) emisión y verificación de tickets
 │   ├── generated/prisma/         cliente generado (ignorado por git)
@@ -243,9 +250,17 @@ Incluido:
 
 No incluido (fases posteriores): combate, mazmorras, objetos, árbol de habilidades jugable, grupos y tiempo real.
 
-### Primer prototipo jugable (Fase 2)
+### Primer prototipo jugable (Fase 2, implementado)
 
-Una sala de mazmorra en canvas 2D, un jugador, movimiento WASD/joystick táctil, ataque básico, esquiva con invulnerabilidad breve, 3 tipos de enemigo (perseguidor rápido, a distancia, bloqueador), XP validada en servidor, piso 5 con el primer jefe (2 fases, telegráficos) e inventario básico. La simulación se escribe ya en `src/game/simulation` como función pura `step(state, inputs, dt)`, para ejecutarla después dentro del Durable Object sin reescribirla.
+- **Simulación** pura en `src/game/simulation`: `step(ctx, state, inputs)` a paso fijo de 1/20 s (sin `dt` variable, para que la repetición sea exacta), `stepInPlace` para repeticiones largas y `replay(config, entradas)`. Lista para ejecutarse en el Durable Object de la Fase 4 (las entradas ya son una por jugador).
+- **Pisos 1–5** generados con semilla registrada: salas encadenadas con pasillos de 2 casillas, validación BFS (sin zonas aisladas, salida y enemigos alcanzables, ningún enemigo encima del inicio) y reintento con semilla derivada. Condición de victoria: eliminar a todos los enemigos y cruzar el portal.
+- **Combate:** movimiento, ataque básico por clase (arco cuerpo a cuerpo o proyectil) con preparación y recuperación, esquiva con invulnerabilidad y enfriamiento, una habilidad característica por clase (Bastión, Torbellino, Luz restauradora) con coste de recurso y enfriamiento, críticos, armadura, estados (Ralentizado, Aturdido, Bastión), muerte y derrota.
+- **Enemigos:** Acechador hueco (perseguidor rápido), Arquero de hueso (mantiene la distancia, saetas que ralentizan) y Centinela de piedra (bloqueo frontal del 75 %, giro lento, golpe en área con larga recuperación). Todos con telegráficos y ventana de castigo.
+- **Jefe del piso 5:** Varkhul, el Carcelero de Ceniza. Fase 1: patrón Barrido / Mazazo. Fase 2 (50 %): rugido invulnerable, dos acechadores invocados, Condena triple y Anillo de brasas (onda que hay que esquivar con invulnerabilidad). Recompensa exclusiva: Grillete de Varkhul (legendario o mítico).
+- **Servidor:** intentos con semilla, dificultad (Normal en esta fase) e instantánea del personaje fijadas al empezar; validación por repetición; XP con `applyExperience`; botín determinista solo de objetos que la clase puede usar; `RewardGrant` idempotente; inventario con capacidad (60).
+- **Pantallas:** panel de descenso con historial en la ficha del personaje, pantalla de combate (canvas con interpolación, telegráficos, números de daño, barra de jefe, avisos, controles táctiles), pantalla de recompensas con animación de subida de nivel e inventario con filtros por categoría y rareza.
+
+Fuera de la Fase 2: equipar/comparar/desmontar objetos y pociones (Fase 3), reanimación entre aliados (Fase 4, la simulación ya distingue "derribado"), selección de dificultad y más contenido (Fase 5).
 
 ---
 
