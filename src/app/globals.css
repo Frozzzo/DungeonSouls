@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-abyss-950: #07060a;
+  --color-abyss-900: #0e0c13;
+  --color-abyss-800: #17141f;
+  --color-abyss-700: #231e2e;
+  --color-abyss-600: #332b42;
+  --color-bone-100: #ede6d6;
+  --color-bone-300: #c8bea8;
+  --color-bone-500: #8e8473;
+  --color-ember-400: #f0a04b;
+  --color-ember-500: #d97a2b;
+  --color-ember-600: #b35d1a;
+  --color-blood-500: #b3261e;
+  --color-blood-400: #d9443a;
+  --color-verdigris-400: #4fc1b8;
+  --color-gold-400: #d9b44a;
+  --font-display: var(--font-cinzel);
+  --font-sans: var(--font-inter);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-abyss-950);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(217, 122, 43, 0.12), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 50% 110%, rgba(179, 38, 30, 0.1), transparent 60%);
+  background-attachment: fixed;
+  color: var(--color-bone-100);
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(35, 30, 46, 0.85), rgba(14, 12, 19, 0.92));
+  border: 1px solid var(--color-abyss-600);
+  box-shadow:
+    inset 0 1px 0 rgba(237, 230, 214, 0.04),
+    0 10px 30px -12px rgba(0, 0, 0, 0.8);
+}
+
+.rune-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-ember-600), transparent);
+}
+
+@keyframes ember-flicker {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+
+.ember-glow {
+  text-shadow: 0 0 18px rgba(240, 160, 75, 0.35);
+  animation: ember-flicker 4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ember-glow { animation: none; }
+}

@@ -1,0 +1,94 @@
+// Esquema de la Fase 1 (fundación). El diseño completo de todas las fases está en docs/modelo-datos.md.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  /// Siempre en minúsculas; se normaliza antes de guardar.
+  email        String   @unique
+  username     String
+  /// Clave normalizada (minúsculas) para unicidad sin distinguir mayúsculas.
+  usernameKey  String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions   Session[]
+  characters Character[]
+}
+
+/// Sesiones de servidor. El navegador solo guarda un token aleatorio; aquí se guarda su hash SHA-256.
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Registro de intentos de autenticación para limitar la tasa de solicitudes entre instancias.
+model AuthAttempt {
+  id        String          @id @default(cuid())
+  kind      AuthAttemptKind
+  /// Clave del límite: "email:<hash>" o "ip:<hash>". Nunca la contraseña.
+  key       String
+  success   Boolean
+  createdAt DateTime        @default(now())
+
+  @@index([kind, key, createdAt])
+  @@index([createdAt])
+}
+
+enum AuthAttemptKind {
+  LOGIN
+  REGISTER
+}
+
+enum CharacterClass {
+  TANK
+  DPS
+  HEALER
+}
+
+/// Progreso permanente del personaje. El progreso temporal de una expedición vivirá en otras tablas (fase 2+).
+model Character {
+  id        String         @id @default(cuid())
+  userId    String
+  name      String
+  /// Nombre normalizado para unicidad global sin distinguir mayúsculas.
+  nameKey   String         @unique
+  class     CharacterClass
+  level     Int            @default(1)
+  /// XP acumulada dentro del nivel actual.
+  experience Int           @default(0)
+  /// Puntos de atributo sin asignar.
+  statPoints  Int          @default(0)
+  /// Puntos de habilidad sin gastar (se usan en la fase 3).
+  skillPoints Int          @default(0)
+
+  /// Puntos asignados manualmente. Los totales se calculan con src/game/stats.
+  allocatedStrength     Int @default(0)
+  allocatedDexterity    Int @default(0)
+  allocatedIntelligence Int @default(0)
+  allocatedVitality     Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
