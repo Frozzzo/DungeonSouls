@@ -10,8 +10,14 @@ import { getClassDefinition } from "@/game/classes/definitions";
 import { characterIdSchema } from "@/lib/validation/character";
 import { requireUser } from "@/server/auth/current-user";
 import { getOwnedCharacter } from "@/server/characters/service";
+import { getActiveRunId, listRecentRuns, unlockedFloors } from "@/server/dungeon/service";
+import { StartRunButton } from "@/components/dungeon/start-run-button";
+import { buttonStyles } from "@/components/ui/button";
+import { isBossFloor, MAX_FLOOR } from "@/game/dungeon/floors";
 
 export const metadata: Metadata = { title: "Personaje" };
+
+const RUN_STATUS_LABELS = { ACTIVE: "En curso", COMPLETED: "Completado", FAILED: "Derrota", ABANDONED: "Abandonado" } as const;
 
 export default async function CharacterPage({ params }: PageProps<"/characters/[id]">) {
   const user = await requireUser();
@@ -23,6 +29,9 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
 
   const def = getClassDefinition(character.classId);
   const { derived } = character.stats;
+  const [activeRunId, history] = await Promise.all([getActiveRunId(user.id, character.id), listRecentRuns(user.id, character.id)]);
+  const floors = unlockedFloors(character.highestFloorCleared);
+  const nextFloor = floors[floors.length - 1];
 
   return (
     <div className="space-y-6">
@@ -54,6 +63,58 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
             color="linear-gradient(90deg,#8a6d1c,#d9b44a)"
           />
         </div>
+      </section>
+
+      <section className="panel rounded-xl p-6" aria-labelledby="descent-title">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 id="descent-title" className="font-display text-xl">
+              Descenso
+            </h2>
+            <p className="text-sm text-bone-300" data-testid="highest-floor">
+              {character.highestFloorCleared > 0 ? `Piso más profundo completado: ${character.highestFloorCleared}` : "Aún no has completado ningún piso."}
+            </p>
+            <p className="text-xs text-bone-500">El piso {MAX_FLOOR} guarda al primer jefe. Dificultad: Normal (las demás llegan en la Fase 5).</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {activeRunId ? (
+              <Link href={`/characters/${character.id}/runs/${activeRunId}`} className={buttonStyles("secondary")}>
+                Continuar partida
+              </Link>
+            ) : null}
+            <StartRunButton characterId={character.id} floor={nextFloor} label={`Entrar al piso ${nextFloor}`} />
+            <Link href={`/characters/${character.id}/inventory`} className={buttonStyles("ghost")}>
+              Inventario
+            </Link>
+          </div>
+        </div>
+        {floors.length > 1 ? (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-xs text-bone-500">Repetir:</span>
+            {floors.slice(0, -1).map((f) => (
+              <StartRunButton key={f} characterId={character.id} floor={f} label={isBossFloor(f) ? `Piso ${f} (jefe)` : `Piso ${f}`} variant="ghost" className="px-3 py-1.5" />
+            ))}
+          </div>
+        ) : null}
+        {history.length > 0 ? (
+          <div className="mt-5">
+            <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-ember-400">Historial reciente</h3>
+            <ul className="divide-y divide-abyss-700 text-sm" data-testid="run-history">
+              {history.map((r) => (
+                <li key={r.id} className="flex items-center justify-between gap-3 py-1.5">
+                  <span>Piso {r.floor}</span>
+                  <span className={r.status === "COMPLETED" ? "text-verdigris-400" : r.status === "FAILED" ? "text-blood-400" : "text-bone-500"}>
+                    {RUN_STATUS_LABELS[r.status]}
+                  </span>
+                  <span className="tabular-nums text-xs text-bone-500">
+                    {r.xp !== null ? `+${r.xp} XP` : "—"}
+                    {r.seconds !== null ? ` · ${Math.floor(r.seconds / 60)}:${String(r.seconds % 60).padStart(2, "0")}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </section>
 
       <div className="grid gap-6 lg:grid-cols-3">

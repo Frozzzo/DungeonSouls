@@ -1,4 +1,4 @@
-// Esquema de la Fase 1 (fundación). El diseño completo de todas las fases está en docs/modelo-datos.md.
+// Esquema de las fases 1 (fundación) y 2 (combate). El diseño completo de todas las fases está en docs/modelo-datos.md.
 
 generator client {
   provider = "prisma-client"
@@ -85,10 +85,104 @@ model Character {
   allocatedIntelligence Int @default(0)
   allocatedVitality     Int @default(0)
 
+  /// Piso más profundo completado (desbloquea el siguiente).
+  highestFloorCleared Int @default(0)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs         DungeonRun[]
+  rewardGrants RewardGrant[]
+  items        ItemInstance[]
 
   @@index([userId])
+}
+
+enum Difficulty {
+  NORMAL
+  HARD
+  NIGHTMARE
+  ABYSS
+}
+
+enum RunStatus {
+  ACTIVE
+  COMPLETED
+  FAILED
+  ABANDONED
+}
+
+enum ItemRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  EPIC
+  LEGENDARY
+  MYTHIC
+}
+
+/// Un intento de un piso (progreso temporal). La semilla, la dificultad y la instantánea del
+/// personaje se fijan al crearlo y no cambian: con ellas el servidor vuelve a ejecutar la partida.
+model DungeonRun {
+  id          String     @id @default(cuid())
+  characterId String
+  floor       Int
+  difficulty  Difficulty @default(NORMAL)
+  /// Semilla de generación (entero positivo de 31 bits).
+  seed        Int
+  /// Versión de las reglas de simulación con la que empezó.
+  simVersion  Int
+  /// Instantánea del personaje al empezar (nivel y puntos asignados), validada con Zod.
+  levelAtStart     Int
+  allocatedAtStart Json
+  status      RunStatus  @default(ACTIVE)
+  /// Envíos rechazados (entradas incompletas); al superar el máximo, el intento se abandona.
+  rejectedSubmissions Int @default(0)
+  /// Resumen del resultado verificado por el servidor (validado con Zod).
+  outcome     Json?
+  ticks       Int?
+  startedAt   DateTime   @default(now())
+  endedAt     DateTime?
+
+  character   Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  rewardGrant RewardGrant?
+
+  @@index([characterId, status])
+  @@index([characterId, startedAt])
+}
+
+/// Recompensa concedida. `idempotencyKey` es único: aplicar dos veces la misma recompensa es imposible.
+model RewardGrant {
+  id             String   @id @default(cuid())
+  idempotencyKey String   @unique
+  characterId    String
+  runId          String   @unique
+  xp             Int
+  levelsGained   Int
+  createdAt      DateTime @default(now())
+
+  character Character      @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  run       DungeonRun     @relation(fields: [runId], references: [id], onDelete: Cascade)
+  items     ItemInstance[]
+
+  @@index([characterId])
+}
+
+/// Objeto concreto del inventario. La definición base vive en el código (src/game/items).
+model ItemInstance {
+  id          String     @id @default(cuid())
+  characterId String
+  baseItemId  String
+  rarity      ItemRarity
+  itemLevel   Int
+  /// Afijos [{ id, value }], validados con Zod al leer y al escribir.
+  affixes     Json
+  sourceRewardGrantId String?
+  createdAt   DateTime   @default(now())
+
+  character   Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  sourceGrant RewardGrant? @relation(fields: [sourceRewardGrantId], references: [id], onDelete: SetNull)
+
+  @@index([characterId, createdAt])
 }

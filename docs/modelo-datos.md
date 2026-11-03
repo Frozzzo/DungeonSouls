@@ -21,6 +21,17 @@ Garantías ya implementadas:
 - Asignación de puntos con escritura condicional (`updateMany` con `statPoints` y `updatedAt` esperados): dos peticiones simultáneas no gastan los mismos puntos.
 - Toda consulta de personaje filtra por `userId` del usuario de la sesión.
 
+## Fase 2 (implementado)
+
+| Modelo | Propósito | Notas |
+| --- | --- | --- |
+| `Character.highestFloorCleared` | Progreso de descenso | Desbloquea el piso siguiente (hasta el 5 en esta fase) |
+| `DungeonRun` | Intento de un piso (progreso temporal) | `floor`, `difficulty`, `seed` (31 bits), `simVersion`, instantánea `levelAtStart` + `allocatedAtStart` (JSON validado con Zod), `status` (ACTIVE, COMPLETED, FAILED, ABANDONED), `outcome` (JSON validado: resultado verificado, XP, nivel antes/después), `rejectedSubmissions` (máx. 5) |
+| `RewardGrant` | Recompensa concedida | `idempotencyKey` único (`run:<intento>:<personaje>`), `runId` único, `xp`, `levelsGained` |
+| `ItemInstance` | Inventario | `baseItemId` (catálogo en `src/game/items/bases.ts`), `rarity` (6 valores), `itemLevel`, `affixes` (JSON validado con Zod al leer y escribir), `sourceRewardGrantId` |
+
+Un personaje tiene como máximo un intento activo: empezar otro abandona el anterior (transacción serializable con reintento). Cuando lleguen grupos (Fase 4), `DungeonRun` se generaliza en `Expedition` + `Encounter`; las recompensas ya usan el mismo patrón idempotente.
+
 ## Diseño completo (fases 2–5)
 
 ```
