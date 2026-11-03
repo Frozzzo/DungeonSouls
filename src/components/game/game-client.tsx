@@ -19,7 +19,8 @@ import { step } from "@/game/simulation/step";
 import type { SimConfig, SimState, SimStatus } from "@/game/simulation/types";
 import type { CombatKit } from "@/game/combat/kits";
 import type { RunResultView } from "@/server/dungeon/service";
-import { InputController } from "./controls";
+import { CONSUMABLES } from "@/game/items/consumables";
+import { InputController, POTION_KEY, SKILL_KEYS } from "./controls";
 import { GameRenderer } from "./renderer";
 import { TouchControls } from "./touch-controls";
 
@@ -32,8 +33,10 @@ interface HudSnapshot {
   maxResource: number;
   attack: number;
   dodge: number;
-  ability: number;
-  abilityAffordable: boolean;
+  /** Por hueco: proporción de enfriamiento restante y si hay recurso suficiente. */
+  skills: ({ ratio: number; affordable: boolean } | null)[];
+  potions: number;
+  potion: number;
   statuses: string[];
   enemies: number;
   portalOpen: boolean;
@@ -77,6 +80,8 @@ export function GameClient({
   const player = config.players[0];
   const classDef = CLASS_DEFINITIONS[player.classId];
   const kit = getCombatKit(player.classId);
+  // Habilidades tal como las resuelve la simulación (mismo código): nombre, coste y enfriamiento por hueco.
+  const skills = useMemo(() => createInitialState(ctx).players[0].skills, [ctx]);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -159,7 +164,7 @@ export function GameClient({
       renderer.render(prev, state, Math.min(1, acc / STEP_MS), elapsed / 1000);
       if (now - lastHud > 100) {
         lastHud = now;
-        setHud(snapshot(state, kit));
+        setHud(snapshot(state, kit, skills));
       }
       raf = requestAnimationFrame(frame);
     };
@@ -170,7 +175,7 @@ export function GameClient({
       window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ctx, controller, player.id, autopilot, submit, kit]);
+  }, [ctx, controller, player.id, autopilot, submit, kit, skills]);
 
   useEffect(() => {
     if (!banner) return;
@@ -242,13 +247,26 @@ export function GameClient({
       ) : null}
 
       {/* Enfriamientos */}
-      <div className={`pointer-events-none absolute flex gap-2 ${isTouch ? "left-3 top-32" : "bottom-3 left-1/2 -translate-x-1/2"}`}>
+      <div className={`pointer-events-none absolute flex gap-2 ${isTouch ? "left-3 top-32 max-w-[62vw] flex-wrap" : "bottom-3 left-1/2 -translate-x-1/2"}`}>
         <Cooldown label={kit.basic.name} hint={isTouch ? "" : "Clic / J"} ratio={hud?.attack ?? 0} />
         <Cooldown label="Esquiva" hint={isTouch ? "" : "Espacio"} ratio={hud?.dodge ?? 0} />
-        <Cooldown label={kit.ability.name} hint={isTouch ? "" : "Q"} ratio={hud?.ability ?? 0} disabled={hud ? !hud.abilityAffordable : false} />
+        {skills.map((skill, slot) =>
+          skill ? (
+            <Cooldown
+              key={slot}
+              label={skill.name}
+              hint={isTouch ? "" : SKILL_KEYS[slot].toUpperCase()}
+              ratio={hud?.skills[slot]?.ratio ?? 0}
+              disabled={hud ? !hud.skills[slot]?.affordable : false}
+              ultimate={slot === 3}
+              testId={`hud-skill-${slot}`}
+            />
+          ) : null,
+        )}
+        <Cooldown label={`Poción ×${hud?.potions ?? player.potions}`} hint={isTouch ? "" : POTION_KEY} ratio={hud?.potion ?? 0} disabled={(hud?.potions ?? player.potions) === 0} testId="hud-potions" />
       </div>
 
-      {isTouch && phase === "playing" ? <TouchControls controller={controller} abilityName={kit.ability.name} /> : null}
+      {isTouch && phase === "playing" ? <TouchControls controller={controller} skills={skills.map((s) => s?.name ?? null)} potions={hud?.potions ?? player.potions} /> : null}
 
       {phase !== "playing" ? (
         <div className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-abyss-950/75 p-4 backdrop-blur-sm">
@@ -271,8 +289,21 @@ export function GameClient({
                   <li>
                     <strong className="text-bone-100">Esquivar:</strong> Espacio. Eres invulnerable durante la esquiva
                   </li>
+                  {skills.map((skill, slot) =>
+                    skill ? (
+                      <li key={slot}>
+                        <strong className="text-bone-100">
+                          {skill.name}
+                          {slot === 3 ? " (definitiva)" : ""}:
+                        </strong>{" "}
+                        {SKILL_KEYS[slot].toUpperCase()}
+                        {slot === 0 ? " o clic derecho" : ""}. Cuesta {skill.resourceCost} de {classDef.resource.name.toLowerCase()} · {skill.cooldown} s de enfriamiento
+                      </li>
+                    ) : null,
+                  )}
                   <li>
-                    <strong className="text-bone-100">{kit.ability.name}:</strong> Q o clic derecho. {kit.ability.description}
+                    <strong className="text-bone-100">Poción:</strong> {POTION_KEY}. Llevas {player.potions}; cada una cura el{" "}
+                    {Math.round(CONSUMABLES.HEALTH_POTION.healRatio * 100)} % de tu vida.
                   </li>
                   <li>Las zonas rojas avisan de un ataque. Los enemigos con borde verde están recuperándose: es tu momento.</li>
                 </ul>
@@ -325,7 +356,7 @@ export function GameClient({
   );
 }
 
-function snapshot(state: SimState, kit: CombatKit): HudSnapshot {
+function snapshot(state: SimState, kit: CombatKit, skills: SimState["players"][number]["skills"]): HudSnapshot {
   const me = state.players[0];
   const boss = state.boss && state.boss.hp > 0 ? state.boss : null;
   const bossDef = boss ? BOSS_DEFINITIONS[boss.bossId] : null;
@@ -340,8 +371,9 @@ function snapshot(state: SimState, kit: CombatKit): HudSnapshot {
     maxResource: me.maxResource,
     attack: cdRatio(attackLeft, attackTotal),
     dodge: cdRatio(me.dodgeCooldown, secondsToTicks(BALANCE.combat.dodge.cooldown)),
-    ability: cdRatio(me.abilityCooldown, secondsToTicks(kit.ability.cooldown)),
-    abilityAffordable: me.resource >= kit.ability.cost,
+    skills: skills.map((skill, slot) => (skill ? { ratio: cdRatio(me.skillCooldowns[slot], secondsToTicks(skill.cooldown)), affordable: me.resource >= skill.resourceCost } : null)),
+    potions: me.potions,
+    potion: cdRatio(me.potionCooldown, secondsToTicks(CONSUMABLES.HEALTH_POTION.cooldown)),
     statuses: me.statuses.map((s) => STATUS_DEFINITIONS[s.id].name),
     enemies: state.enemies.length,
     portalOpen: state.portalOpen,
@@ -394,9 +426,12 @@ function HudBar({ label, value, max, color, testId }: { label: string; value: nu
   );
 }
 
-function Cooldown({ label, hint, ratio, disabled }: { label: string; hint: string; ratio: number; disabled?: boolean }) {
+function Cooldown({ label, hint, ratio, disabled, ultimate, testId }: { label: string; hint: string; ratio: number; disabled?: boolean; ultimate?: boolean; testId?: string }) {
   return (
-    <div className={`panel relative w-20 overflow-hidden rounded-md px-2 py-1.5 text-center text-[11px] sm:w-24 ${disabled ? "opacity-50" : ""}`}>
+    <div
+      className={`panel relative w-16 overflow-hidden rounded-md px-1.5 py-1.5 text-center text-[10px] sm:w-20 sm:text-[11px] ${disabled ? "opacity-50" : ""} ${ultimate ? "border-ember-500/70" : ""}`}
+      data-testid={testId}
+    >
       <div className="absolute inset-x-0 bottom-0 bg-abyss-950/80" style={{ height: `${ratio * 100}%` }} />
       <p className="relative truncate font-semibold">{label}</p>
       {hint ? <p className="relative text-bone-500">{hint}</p> : null}

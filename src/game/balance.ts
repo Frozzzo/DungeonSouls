@@ -14,6 +14,8 @@ export const BALANCE = {
     startingStatPoints: 5,
     statPointsPerLevel: 3,
     skillPointsPerLevel: 1,
+    /** Puntos de habilidad al crear un personaje (además de la habilidad inicial de su clase). */
+    startingSkillPoints: 1,
   },
 
   attributes: {
@@ -80,6 +82,17 @@ export const BALANCE = {
     bonusBossItems: 1,
     /** Capacidad del inventario. Si está lleno, el botín sobrante se pierde (se avisa). */
     inventoryCapacity: 60,
+  },
+
+  consumables: {
+    potionMaxStack: 5,
+    potionsPerRun: 3,
+    startingPotions: 3,
+    potionCraftCost: 12,
+    potionsPerFloorClear: 1,
+    bonusBossPotions: 1,
+    /** Polvo abisal al desmontar, por rareza (a nivel de objeto 1). */
+    dismantleYield: { COMMON: 2, UNCOMMON: 4, RARE: 8, EPIC: 15, LEGENDARY: 30, MYTHIC: 60 },
   },
 
   characters: {

@@ -11,9 +11,21 @@ export const CATEGORY_LABELS = {
   ACCESSORY: "Accesorio",
 } as const;
 
-export function ItemCard({ item }: { item: ItemView }) {
+export const SLOT_LABELS = {
+  WEAPON: "Arma",
+  HELMET: "Casco",
+  CHEST: "Pechera",
+  GLOVES: "Guantes",
+  LEGS: "Pantalones",
+  BOOTS: "Botas",
+  ACCESSORY_1: "Accesorio 1",
+  ACCESSORY_2: "Accesorio 2",
+} as const;
+
+/** Tarjeta de objeto. `children` permite añadir acciones (equipar, desmontar...) y la comparación. */
+export function ItemCard({ item, children }: { item: ItemView; children?: React.ReactNode }) {
   return (
-    <article className="panel flex gap-3 rounded-lg p-3" style={{ borderColor: `${item.rarityColor}55` }} data-testid="inventory-item">
+    <article className="panel flex gap-3 rounded-lg p-3" style={{ borderColor: `${item.rarityColor}55` }} data-testid="inventory-item" data-equipped={item.equippedSlot ?? undefined}>
       <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border bg-abyss-950" style={{ borderColor: `${item.rarityColor}88` }}>
         <ItemIcon category={item.category} color={item.rarityColor} />
       </div>
@@ -34,6 +46,8 @@ export function ItemCard({ item }: { item: ItemView }) {
         ) : null}
         {item.uniqueEffect ? <p className="mt-1 text-xs italic text-ember-400">{item.uniqueEffect}</p> : null}
         {!item.usableByClass ? <p className="mt-1 text-xs text-blood-400">Tu clase no puede usarlo</p> : null}
+        {item.equippedSlot ? <p className="mt-1 text-xs font-semibold text-verdigris-400">Equipado · {SLOT_LABELS[item.equippedSlot]}</p> : null}
+        {children}
       </div>
     </article>
   );

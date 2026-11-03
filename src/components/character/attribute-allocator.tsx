@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { addAttributes, sumAttributes } from "@/game/attributes";
 import { BALANCE } from "@/game/balance";
+import type { GearBonus } from "@/game/items/equipment";
 import { type CharacterStats, computeCharacterStats } from "@/game/stats/compute";
 import { ATTRIBUTE_KEYS, type AttributeKey, type Attributes, type ClassId, zeroAttributes } from "@/game/types";
 import type { FormState } from "@/lib/validation/form";
@@ -20,13 +21,15 @@ interface Props {
   allocated: Attributes;
   availablePoints: number;
   stats: CharacterStats;
+  /** Bonificación del equipo puesto (para que la vista previa coincida con el servidor). */
+  gear?: GearBonus;
 }
 
 /**
  * Asignación de puntos con vista previa. La vista previa usa las mismas fórmulas que el servidor
  * (src/game), pero el servidor vuelve a validar y calcular todo al enviar.
  */
-export function AttributeAllocator({ characterId, classId, level, allocated, availablePoints, stats }: Props) {
+export function AttributeAllocator({ characterId, classId, level, allocated, availablePoints, stats, gear }: Props) {
   const [delta, setDelta] = useState<Attributes>(zeroAttributes);
   const [state, formAction] = useActionState<FormState, FormData>(async (prev, formData) => {
     const result = await allocateStatsAction(prev, formData);
@@ -36,7 +39,7 @@ export function AttributeAllocator({ characterId, classId, level, allocated, ava
 
   const spent = sumAttributes(delta);
   const remaining = availablePoints - spent;
-  const preview = spent > 0 ? computeCharacterStats({ classId, level, allocated: addAttributes(allocated, delta) }) : undefined;
+  const preview = spent > 0 ? computeCharacterStats({ classId, level, allocated: addAttributes(allocated, delta), gear }) : undefined;
   const cap = BALANCE.attributes.maxAllocatedPerAttribute;
 
   const change = (key: AttributeKey, amount: number) =>

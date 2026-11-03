@@ -1,4 +1,5 @@
 import { BALANCE } from "../balance";
+import { applyStatus } from "../combat/status";
 import { isWalkable } from "../dungeon/grid";
 import { distance } from "../math/vec";
 import { updateBoss } from "./boss-ai";
@@ -53,6 +54,7 @@ function updateProjectiles(ctx: SimContext, state: SimState) {
       for (const enemy of state.enemies) {
         if (enemy.hp > 0 && distance(enemy.pos, p.pos) <= enemy.radius + p.radius) {
           if (owner) damageEnemy(state, owner, enemy, p.damage, p.crit, { x: p.pos.x - p.vel.x, y: p.pos.y - p.vel.y });
+          if (p.applies && enemy.hp > 0) applyStatus(enemy.statuses, p.applies.status, p.applies.ticks);
           consumed = true;
           break;
         }

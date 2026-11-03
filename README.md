@@ -8,7 +8,9 @@ RPG de mazmorras **cooperativo online** para navegador: progresión tipo ARPG (n
 
 **Fase 2 (prototipo de combate) completada:** combate de acción en canvas (teclado/ratón y táctil) sobre una simulación determinista por ticks; pisos generados con semilla; tres enemigos con comportamientos distintos; Varkhul, el primer jefe (piso 5, dos fases y telegráficos); XP y botín concedidos solo por el servidor tras **repetir la partida** a partir de las intenciones del jugador; inventario v1 con 6 rarezas y filtros.
 
-Siguiente: **Fase 3, progresión.** Hoja de ruta completa en [docs/arquitectura.md](docs/arquitectura.md#8-orden-de-implementación-y-criterios-de-aceptación).
+**Fase 3 (progresión) completada:** árbol de habilidades por clase (3 ramas, 8 habilidades con rangos y requisitos) con 3 básicas + 1 definitiva equipables; equipo con 8 huecos que suma a las estadísticas del combate, comparación calculada en el servidor y restricciones de clase; desmontar objetos en Polvo abisal; pociones limitadas (máx. 3 por piso, con enfriamiento) que el servidor descuenta según la repetición de la partida.
+
+Siguiente: **Fase 4, multijugador.** Hoja de ruta completa en [docs/arquitectura.md](docs/arquitectura.md#8-orden-de-implementación-y-criterios-de-aceptación).
 
 ## Empezar
 

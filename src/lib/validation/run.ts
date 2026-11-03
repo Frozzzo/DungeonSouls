@@ -61,7 +61,11 @@ export const runOutcomeSchema = z.object({
   levelBefore: z.number().int().min(1),
   levelAfter: z.number().int().min(1),
   itemsLost: nonNegInt,
+  /** Pociones bebidas (según la repetición) y encontradas. Ausentes en intentos anteriores a la Fase 3. */
+  potionsUsed: nonNegInt.default(0),
+  potionsFound: nonNegInt.default(0),
 });
 
 export type SubmitRunInput = z.infer<typeof submitRunSchema>;
 export type RunOutcome = z.infer<typeof runOutcomeSchema>;
+export type RunOutcomeInput = z.input<typeof runOutcomeSchema>;

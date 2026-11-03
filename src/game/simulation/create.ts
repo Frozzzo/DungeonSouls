@@ -6,7 +6,9 @@ import { circleFits } from "../dungeon/grid";
 import { floorScaling } from "../dungeon/floors";
 import { ENEMY_DEFINITIONS, ENEMY_KIND_IDS, type EnemyKindId } from "../enemies/definitions";
 import type { Vec } from "../math/vec";
+import { CONSUMABLES } from "../items/consumables";
 import { deriveSeed } from "../random/rng";
+import { LOADOUT_SLOTS, resolveSkill, slotKind } from "../skills/rules";
 import type { SimContext } from "./context";
 import type { EnemyEntity, PlayerEntity, SimState } from "./types";
 
@@ -76,7 +78,18 @@ export function createInitialState(ctx: SimContext): SimState {
       action: { kind: "NONE" },
       attackCooldown: 0,
       dodgeCooldown: 0,
-      abilityCooldown: 0,
+      // La simulación vuelve a resolver (y validar) las habilidades: lo que no sea de la clase se descarta.
+      skills: LOADOUT_SLOTS.map((slotId, slot) => {
+        const equipped = p.loadout[slot];
+        const resolved = equipped ? resolveSkill(equipped.skillId, equipped.rank, p.classId) : null;
+        const repeated = p.loadout.slice(0, slot).some((e) => e?.skillId === equipped?.skillId);
+        return resolved && resolved.kind === slotKind(slotId) && !repeated ? resolved : null;
+      }),
+      skillCooldowns: LOADOUT_SLOTS.map(() => 0),
+      potions: Math.max(0, Math.min(CONSUMABLES.HEALTH_POTION.perRun, Math.floor(p.potions))),
+      potionCooldown: 0,
+      uniqueEffects: [...p.uniqueEffects],
+      nextHitBonus: 0,
       invulnerable: 0,
       dodgeBuffer: 0,
       statuses: [],
@@ -125,7 +138,7 @@ export function createInitialState(ctx: SimContext): SimState {
     projectiles: [],
     hazards: [],
     portalOpen: false,
-    summary: { kills: emptyKills(), bossDefeated: false, damageDealt: 0, damageTaken: 0, dodges: 0 },
+    summary: { kills: emptyKills(), bossDefeated: false, damageDealt: 0, damageTaken: 0, dodges: 0, potionsUsed: 0, skillsUsed: 0 },
     events: [],
   };
 }

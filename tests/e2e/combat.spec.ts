@@ -63,4 +63,35 @@ test("flujo completo: crear personaje, completar el piso 1 y recibir recompensas
 
   await page.getByRole("link", { name: "Inventario" }).click();
   await expect(page.getByTestId("inventory-count")).not.toHaveText(/^0 /);
+
+  // Fase 3: equipar el primer objeto (con comparación calculada en el servidor).
+  const first = page.getByTestId("inventory-item").first();
+  await expect(first.getByTestId("item-comparison")).toBeVisible();
+  await first.getByRole("button", { name: "Equipar" }).click();
+  await expect(page.locator('[data-testid="inventory-item"][data-equipped]')).toHaveCount(1);
+  await expect(page.getByTestId("equipment").getByRole("button", { name: "Quitar" })).toHaveCount(1);
+});
+
+test("árbol de habilidades: aprender, equipar y verlo en la pantalla de combate", async ({ page }) => {
+  await registerWithCharacter(page, "Segador");
+  await page.getByTestId("open-skills").click();
+  await expect(page).toHaveURL(/\/skills$/);
+  await expect(page.getByTestId("skill-points")).toHaveText("1");
+  await expect(page.getByTestId("loadout-BASIC_1")).toContainText("Torbellino");
+
+  const rend = page.getByTestId("skill-dps-rend");
+  await rend.getByRole("button", { name: "Aprender (1 punto)" }).click();
+  await expect(page.getByTestId("skill-points")).toHaveText("0");
+  await expect(rend.getByTestId("skill-rank")).toContainText("Rango 1/5");
+  await rend.getByTestId("equip-skill-BASIC_2").getByRole("button").click();
+  await expect(page.getByTestId("loadout-BASIC_2")).toContainText("Desgarro");
+  // Sin puntos no se puede mejorar.
+  await expect(rend.getByRole("button", { name: "Mejorar (1 punto)" })).toBeDisabled();
+
+  await page.getByRole("link", { name: /Volver a/ }).click();
+  await page.getByRole("button", { name: "Entrar al piso 1" }).click();
+  await expect(page.getByTestId("game-screen")).toBeVisible();
+  await expect(page.getByTestId("hud-skill-0")).toContainText("Torbellino");
+  await expect(page.getByTestId("hud-skill-1")).toContainText("Desgarro");
+  await expect(page.getByTestId("hud-potions")).toContainText("3");
 });

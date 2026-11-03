@@ -182,6 +182,6 @@ function resolveAttack(state: SimState, enemy: EnemyEntity) {
 }
 
 /** Aplica el estado de un proyectil enemigo a un jugador alcanzado. */
-export function applyProjectileStatus(player: PlayerEntity, applies: { status: "SLOW"; ticks: number } | null) {
+export function applyProjectileStatus(player: PlayerEntity, applies: { status: "SLOW" | "STUN"; ticks: number } | null) {
   if (applies && player.life === "ALIVE") applyStatus(player.statuses, applies.status, applies.ticks);
 }
