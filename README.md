@@ -10,7 +10,9 @@ RPG de mazmorras **cooperativo online** para navegador: progresión tipo ARPG (n
 
 **Fase 3 (progresión) completada:** árbol de habilidades por clase (3 ramas, 8 habilidades con rangos y requisitos) con 3 básicas + 1 definitiva equipables; equipo con 8 huecos que suma a las estadísticas del combate, comparación calculada en el servidor y restricciones de clase; desmontar objetos en Polvo abisal; pociones limitadas (máx. 3 por piso, con enfriamiento) que el servidor descuenta según la repetición de la partida.
 
-Siguiente: **Fase 4, multijugador.** Hoja de ruta completa en [docs/arquitectura.md](docs/arquitectura.md#8-orden-de-implementación-y-criterios-de-aceptación).
+**Fase 4 (multijugador) completada:** grupos de hasta 4 con código; cada expedición se simula en un Durable Object de Cloudflare con las mismas reglas que el juego en solitario (20 ticks/s, el cliente solo envía intenciones); tickets firmados por Vercel; enemigos y jefes escalados por número de jugadores; reanimación de aliados; reconexión con instantánea completa; recompensas individuales aplicadas por Vercel sin duplicar. Despliegue del servidor de partida en [docs/despliegue.md](docs/despliegue.md#servicio-de-tiempo-real-fase-4).
+
+Siguiente: **Fase 5, contenido.** Hoja de ruta completa en [docs/arquitectura.md](docs/arquitectura.md#8-orden-de-implementación-y-criterios-de-aceptación).
 
 ## Empezar
 
@@ -20,6 +22,8 @@ cp .env.example .env      # configura DATABASE_URL
 npm run db:migrate
 npm run dev
 ```
+
+Para jugar en grupo en local hace falta también el servidor de partida (`npm --prefix realtime run dev`).
 
 Más detalle, pruebas y despliegue en Vercel: [docs/despliegue.md](docs/despliegue.md).
 

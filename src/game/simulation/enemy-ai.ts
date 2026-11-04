@@ -7,12 +7,12 @@ import { damagePlayer } from "./hits";
 import { flowDirection, flowDistance, flowFieldTo, moveCircle } from "./navigation";
 import type { EnemyEntity, PlayerEntity, SimState } from "./types";
 
-/** Jugador vivo más cercano (en línea recta). Desempate estable por orden de la lista. */
+/** Jugador vivo y conectado más cercano (en línea recta). Desempate estable por orden de la lista. */
 export function nearestPlayer(state: SimState, pos: Vec): PlayerEntity | null {
   let best: PlayerEntity | null = null;
   let bestDist = Infinity;
   for (const p of state.players) {
-    if (p.life !== "ALIVE") continue;
+    if (p.life !== "ALIVE" || p.presence !== "CONNECTED") continue;
     const d = distance(pos, p.pos);
     if (d < bestDist) {
       bestDist = d;

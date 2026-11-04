@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import type { InputController } from "./controls";
 
 /** Joystick virtual (mitad izquierda) y botones de acción para pantallas táctiles. */
-export function TouchControls({ controller, skills, potions }: { controller: InputController; skills: readonly (string | null)[]; potions: number }) {
+export function TouchControls({ controller, skills, potions, revive = false }: { controller: InputController; skills: readonly (string | null)[]; potions: number; revive?: boolean }) {
   const [stick, setStick] = useState<{ ox: number; oy: number; x: number; y: number } | null>(null);
   const pointerId = useRef<number | null>(null);
   const RADIUS = 56;
@@ -64,6 +64,20 @@ export function TouchControls({ controller, skills, potions }: { controller: Inp
           )}
         </div>
         <div className="flex flex-col items-center gap-3">
+          {revive ? (
+            <button
+              type="button"
+              className="h-14 w-14 rounded-full border-2 border-verdigris-400/70 bg-verdigris-400/20 text-[10px] font-semibold text-bone-100"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                controller.setTouchInteract(true);
+              }}
+              onPointerUp={() => controller.setTouchInteract(false)}
+              onPointerCancel={() => controller.setTouchInteract(false)}
+            >
+              Reanimar
+            </button>
+          ) : null}
           <button
             type="button"
             className="h-20 w-20 rounded-full border-2 border-ember-400/70 bg-ember-600/40 text-sm font-semibold text-bone-100 active:bg-ember-500/60"

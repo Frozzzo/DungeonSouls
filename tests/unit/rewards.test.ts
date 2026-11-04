@@ -112,8 +112,8 @@ describe("validación del envío de una partida", () => {
     expect(submitRunSchema.safeParse(ok).success).toBe(true);
     expect(submitRunSchema.safeParse({ ...ok, xp: 99999 }).success).toBe(false);
     expect(submitRunSchema.safeParse({ runId: "abc", segments: [[10, 500, 0, 0, 0, 1]] }).success).toBe(false);
-    expect(submitRunSchema.safeParse({ runId: "abc", segments: [[10, 0, 0, 0, 0, 128]] }).success).toBe(false);
-    expect(submitRunSchema.safeParse({ runId: "abc", segments: [[10, 0, 0, 0, 0, 127]] }).success).toBe(true);
+    expect(submitRunSchema.safeParse({ runId: "abc", segments: [[10, 0, 0, 0, 0, 256]] }).success).toBe(false);
+    expect(submitRunSchema.safeParse({ runId: "abc", segments: [[10, 0, 0, 0, 0, 255]] }).success).toBe(true);
     expect(submitRunSchema.safeParse({ runId: "abc", segments: [[0, 0, 0, 0, 0, 0]] }).success).toBe(false);
     expect(submitRunSchema.safeParse({ runId: "abc", segments: [[24000, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]] }).success).toBe(false);
   });

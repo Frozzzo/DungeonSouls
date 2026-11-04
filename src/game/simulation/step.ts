@@ -8,7 +8,7 @@ import { applyProjectileStatus, updateEnemy } from "./enemy-ai";
 import { damageBoss, damageEnemy, damagePlayer } from "./hits";
 import { moveCircle } from "./navigation";
 import { updatePlayer } from "./players";
-import { IDLE_INPUT, type PlayerInput, type SimState } from "./types";
+import { IDLE_INPUT, type PlayerInput, type PlayerPresence, type SimState } from "./types";
 
 /**
  * Avanza la simulación un tick (1/20 s) y devuelve el estado nuevo, sin modificar el anterior.
@@ -33,6 +33,8 @@ export function stepInPlace(ctx: SimContext, state: SimState, inputs: readonly P
   state.events = [];
 
   for (let i = 0; i < state.players.length; i++) updatePlayer(ctx, state, state.players[i], inputs[i] ?? IDLE_INPUT);
+  // La reanimación se pierde si nadie la ha mantenido este tick.
+  for (const p of state.players) if (p.life === "DOWNED" && p.lastReviveTick !== state.tick) p.reviveProgress = 0;
   for (const enemy of state.enemies) updateEnemy(ctx, state, enemy);
   if (state.boss) updateBoss(ctx, state, state.boss);
 
@@ -106,7 +108,7 @@ function updateHazards(state: SimState) {
 /** Evita que las entidades se superpongan (empuje simétrico, respetando muros). */
 function separate(ctx: SimContext, state: SimState) {
   const bodies: Array<{ pos: { x: number; y: number }; radius: number; fixed: boolean; set: (x: number, y: number) => void }> = [];
-  for (const p of state.players) if (p.life === "ALIVE") bodies.push({ pos: p.pos, radius: p.radius, fixed: false, set: (x, y) => (p.pos = { x, y }) });
+  for (const p of state.players) if (p.life === "ALIVE" && p.presence === "CONNECTED") bodies.push({ pos: p.pos, radius: p.radius, fixed: false, set: (x, y) => (p.pos = { x, y }) });
   for (const e of state.enemies) if (e.hp > 0) bodies.push({ pos: e.pos, radius: e.radius, fixed: false, set: (x, y) => (e.pos = { x, y }) });
   const boss = state.boss;
   if (boss && boss.hp > 0) bodies.push({ pos: boss.pos, radius: boss.radius, fixed: true, set: () => undefined });
@@ -157,7 +159,10 @@ function removeDead(state: SimState) {
 }
 
 function checkOutcome(ctx: SimContext, state: SimState) {
-  if (state.players.every((p) => p.life !== "ALIVE")) {
+  // Derrota: todos los que siguen en la partida están derribados (quien abandonó no cuenta).
+  // Si todos abandonaron no hay resultado: el servidor de partida da la expedición por abandonada.
+  const remaining = state.players.filter((p) => p.presence !== "LEFT");
+  if (remaining.length > 0 && remaining.every((p) => p.life !== "ALIVE")) {
     state.status = "DEFEAT";
     state.defeatReason = "DOWNED";
     return;
@@ -168,7 +173,7 @@ function checkOutcome(ctx: SimContext, state: SimState) {
     state.projectiles = state.projectiles.filter((p) => p.team === "PLAYER");
     state.events.push({ type: "PORTAL_OPEN", pos: { ...ctx.layout.exit } });
   }
-  if (state.portalOpen && state.players.some((p) => p.life === "ALIVE" && distance(p.pos, ctx.layout.exit) <= BALANCE.combat.portalRadius)) {
+  if (state.portalOpen && state.players.some((p) => p.life === "ALIVE" && p.presence === "CONNECTED" && distance(p.pos, ctx.layout.exit) <= BALANCE.combat.portalRadius)) {
     state.status = "VICTORY";
     return;
   }
@@ -176,6 +181,18 @@ function checkOutcome(ctx: SimContext, state: SimState) {
     state.status = "DEFEAT";
     state.defeatReason = "TIMEOUT";
   }
+}
+
+/**
+ * Cambia la conexión de un jugador. Solo lo llama el servidor de partida (no forma parte de las
+ * entradas): al desconectarse deja de actuar y de ser objetivo; LEFT es definitivo.
+ */
+export function setPresence(state: SimState, playerId: string, presence: PlayerPresence): boolean {
+  const player = state.players.find((p) => p.id === playerId);
+  if (!player || player.presence === "LEFT" || player.presence === presence) return false;
+  player.presence = presence;
+  player.action = { kind: "NONE" };
+  return true;
 }
 
 /** Copia profunda del estado (solo contiene datos planos). */

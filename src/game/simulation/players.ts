@@ -8,7 +8,7 @@ import type { SkillEffect } from "../skills/definitions";
 import { DT, type SimContext, secondsToTicks } from "./context";
 import { damageBoss, damageEnemy, healPlayer, rollPlayerDamage } from "./hits";
 import { moveCircle } from "./navigation";
-import { AXIS_MAX, BUTTON_ATTACK, BUTTON_DODGE, BUTTON_POTION, type EnemyEntity, type PlayerEntity, type PlayerInput, SKILL_BUTTONS, type SimState } from "./types";
+import { AXIS_MAX, BUTTON_ATTACK, BUTTON_DODGE, BUTTON_INTERACT, BUTTON_POTION, type EnemyEntity, type PlayerEntity, type PlayerInput, SKILL_BUTTONS, type SimState } from "./types";
 
 /** La curación periódica (REGEN) se aplica cada medio segundo. */
 export const REGEN_PULSE_TICKS = 10;
@@ -25,7 +25,7 @@ function axisVector(x: number, y: number): Vec | null {
 
 /** Avanza un jugador un tick según su intención. Todas las reglas (enfriamientos, coste, estados) se validan aquí. */
 export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEntity, input: PlayerInput): void {
-  if (player.life !== "ALIVE") return;
+  if (player.life !== "ALIVE" || player.presence !== "CONNECTED") return;
   const kit = getCombatKit(player.classId);
 
   // Temporizadores y estados.
@@ -59,6 +59,9 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
     const healed = healPlayer(state, player, Math.round(player.maxHp * potion.healRatio), false);
     state.events.push({ type: "POTION", actorId: player.id, amount: healed, pos: { ...player.pos } });
   }
+
+  // Reanimar: mantener pulsado, quieto y sin otra acción, junto a un aliado derribado.
+  if (input.buttons & BUTTON_INTERACT && player.action.kind === "NONE" && channelRevive(state, player)) return;
 
   const action = player.action;
 
@@ -127,6 +130,37 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
     player.action = { kind: "ATTACK", phase: "WINDUP", ticks: Math.max(1, secondsToTicks(kit.basic.windup)), dir };
     state.events.push({ type: "ATTACK", actorId: player.id, pos: { ...player.pos }, dir: { ...dir } });
   }
+}
+
+const REVIVE = BALANCE.multiplayer.revive;
+
+/** Avanza la reanimación del aliado derribado más cercano. Devuelve true si el jugador está reanimando. */
+function channelRevive(state: SimState, player: PlayerEntity): boolean {
+  let target: PlayerEntity | null = null;
+  let best = REVIVE.radius + player.radius;
+  for (const ally of state.players) {
+    if (ally === player || ally.life !== "DOWNED" || ally.presence === "LEFT") continue;
+    // Un aliado por tick: si otro ya lo está reanimando, no se acelera.
+    if (ally.lastReviveTick === state.tick) continue;
+    const d = distance(ally.pos, player.pos);
+    if (d <= best) {
+      best = d;
+      target = ally;
+    }
+  }
+  if (!target) return false;
+  target.lastReviveTick = state.tick;
+  target.reviveProgress++;
+  if (target.reviveProgress >= secondsToTicks(REVIVE.seconds)) {
+    target.life = "ALIVE";
+    target.hp = Math.max(1, Math.round(target.maxHp * REVIVE.healthRatio));
+    target.reviveProgress = 0;
+    target.invulnerable = secondsToTicks(REVIVE.invulnerability);
+    target.action = { kind: "NONE" };
+    player.revivesGiven++;
+    state.events.push({ type: "PLAYER_REVIVED", playerId: target.id, byId: player.id, pos: { ...target.pos } });
+  }
+  return true;
 }
 
 function resolveBasicAttack(state: SimState, player: PlayerEntity, dir: Vec) {

@@ -73,7 +73,8 @@ export function damageBoss(state: SimState, player: PlayerEntity, boss: BossEnti
  * Devuelve true si el golpe conectó.
  */
 export function damagePlayer(state: SimState, player: PlayerEntity, amount: number, stunSeconds = 0): boolean {
-  if (player.life !== "ALIVE") return false;
+  // Un jugador desconectado (o que abandonó) no puede ser derribado mientras no está.
+  if (player.life !== "ALIVE" || player.presence !== "CONNECTED") return false;
   if (player.invulnerable > 0) {
     state.events.push({ type: "DODGED", targetId: player.id, pos: { ...player.pos } });
     return false;
@@ -107,6 +108,9 @@ export function damagePlayer(state: SimState, player: PlayerEntity, amount: numb
     player.hp = 0;
     player.life = "DOWNED";
     player.action = { kind: "NONE" };
+    player.statuses = [];
+    player.reviveProgress = 0;
+    player.downs++;
     state.events.push({ type: "PLAYER_DOWNED", playerId: player.id, pos: { ...player.pos } });
   }
   return true;

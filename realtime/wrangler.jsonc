@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dungeonsouls-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "EXPEDITIONS", "class_name": "ExpeditionDurableObject" }]
+  },
+  // Durable Objects con almacenamiento SQLite: disponibles en el plan gratuito.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ExpeditionDurableObject"] }],
+  "vars": {
+    // Cámbialo por la URL de producción de Vercel (sin barra final).
+    "APP_URL": "https://dungeonsouls.vercel.app",
+    // Orígenes que pueden abrir conexiones (separados por comas).
+    "ALLOWED_ORIGINS": "https://dungeonsouls.vercel.app"
+  }
+  // El secreto REALTIME_SECRET se configura con: npx wrangler secret put REALTIME_SECRET
+}

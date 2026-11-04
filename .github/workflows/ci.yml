@@ -23,15 +23,26 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql://dungeon:dungeon@localhost:5432/dungeonsouls_test?schema=public
+      # Servidor de partida local (wrangler dev) para la prueba E2E del juego en grupo. Secreto solo de CI.
+      E2E_REALTIME: "1"
+      REALTIME_SECRET: ci-only-realtime-secret-not-used-anywhere-else
+      REALTIME_URL: ws://localhost:8788
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            realtime/package-lock.json
       - run: npm ci
+      - run: npm ci
+        working-directory: realtime
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run typecheck
+        working-directory: realtime
       - run: npm test
       - run: npm run test:integration
       # El piloto automático de la prueba E2E que completa un piso solo existe en esta compilación de CI.

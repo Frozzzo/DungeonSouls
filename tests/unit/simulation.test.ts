@@ -234,7 +234,7 @@ describe("simulación: determinismo y entradas", () => {
     const segs = encodeInputs(inputs);
     expect(segs).toHaveLength(3);
     expect([...iterateInputs(segs)]).toEqual(inputs);
-    expect(sanitizeInput({ mx: 5000, my: -5000, ax: 3.7, ay: 0, buttons: 0xff })).toEqual({ mx: 100, my: -100, ax: 4, ay: 0, buttons: 127 });
+    expect(sanitizeInput({ mx: 5000, my: -5000, ax: 3.7, ay: 0, buttons: 0x1ff })).toEqual({ mx: 100, my: -100, ax: 4, ay: 0, buttons: 255 });
   });
 
   it("el piloto automático completa los pisos 1 a 4 con un personaje de nivel 1", () => {

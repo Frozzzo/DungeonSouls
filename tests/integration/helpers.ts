@@ -1,7 +1,7 @@
 import { db } from "@/server/db";
 
 export async function resetDatabase() {
-  await db.$executeRawUnsafe('TRUNCATE TABLE "EquipmentSlot", "CharacterLoadoutSlot", "CharacterSkill", "ConsumableStack", "MaterialStack", "ItemInstance", "RewardGrant", "DungeonRun", "Character", "Session", "AuthAttempt", "User" RESTART IDENTITY CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE TABLE "PartyMember", "Expedition", "Party", "EquipmentSlot", "CharacterLoadoutSlot", "CharacterSkill", "ConsumableStack", "MaterialStack", "ItemInstance", "RewardGrant", "DungeonRun", "Character", "Session", "AuthAttempt", "User" RESTART IDENTITY CASCADE');
 }
 
 let counter = 0;

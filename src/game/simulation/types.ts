@@ -11,7 +11,7 @@ import type { ClassId, DerivedStats } from "../types";
  * Versión de las reglas de simulación. Si cambia, las partidas empezadas con otra versión no
  * pueden validarse (la repetición daría otro resultado) y se descartan.
  */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;
 
 // ---------------------------------------------------------------- Entradas
 
@@ -24,8 +24,10 @@ export const BUTTON_SKILL_2 = 8;
 export const BUTTON_SKILL_3 = 16;
 export const BUTTON_ULTIMATE = 32;
 export const BUTTON_POTION = 64;
+/** Mantener pulsado junto a un aliado derribado para reanimarlo (Fase 4). */
+export const BUTTON_INTERACT = 128;
 export const SKILL_BUTTONS = [BUTTON_SKILL_1, BUTTON_SKILL_2, BUTTON_SKILL_3, BUTTON_ULTIMATE] as const;
-export const BUTTON_MASK = BUTTON_ATTACK | BUTTON_DODGE | BUTTON_SKILL_1 | BUTTON_SKILL_2 | BUTTON_SKILL_3 | BUTTON_ULTIMATE | BUTTON_POTION;
+export const BUTTON_MASK = BUTTON_ATTACK | BUTTON_DODGE | BUTTON_SKILL_1 | BUTTON_SKILL_2 | BUTTON_SKILL_3 | BUTTON_ULTIMATE | BUTTON_POTION | BUTTON_INTERACT;
 
 /** Escala de los ejes cuantizados: los ejes son enteros en [-AXIS_MAX, AXIS_MAX]. */
 export const AXIS_MAX = 100;
@@ -98,6 +100,19 @@ export interface PlayerEntity {
   resource: number;
   maxResource: number;
   life: "ALIVE" | "DOWNED";
+  /**
+   * Conexión del jugador (la fija el servidor de partida, nunca la simulación).
+   * DISCONNECTED: no actúa, los enemigos lo ignoran y no recibe daño. LEFT: abandonó (definitivo).
+   * En la partida de un jugador siempre es CONNECTED.
+   */
+  presence: PlayerPresence;
+  /** Progreso de la reanimación (ticks) mientras está derribado. */
+  reviveProgress: number;
+  /** Último tick en que un aliado avanzó su reanimación (si no avanza, se pierde). */
+  lastReviveTick: number;
+  /** Veces que ha caído y veces que ha reanimado a un aliado. */
+  downs: number;
+  revivesGiven: number;
   action: PlayerAction;
   attackCooldown: number;
   dodgeCooldown: number;
@@ -116,6 +131,8 @@ export interface PlayerEntity {
   /** Último tick en que recibió daño (para efectos visuales). */
   lastHurtTick: number;
 }
+
+export type PlayerPresence = "CONNECTED" | "DISCONNECTED" | "LEFT";
 
 export type EnemyState = "IDLE" | "CHASE" | "WINDUP" | "RECOVERY";
 
@@ -206,6 +223,7 @@ export type SimEvent =
   | { type: "BOSS_PHASE"; phase: number; name: string }
   | { type: "BOSS_DIED"; pos: Vec }
   | { type: "PLAYER_DOWNED"; playerId: string; pos: Vec }
+  | { type: "PLAYER_REVIVED"; playerId: string; byId: string; pos: Vec }
   | { type: "PORTAL_OPEN"; pos: Vec };
 
 export type SimStatus = "RUNNING" | "VICTORY" | "DEFEAT";

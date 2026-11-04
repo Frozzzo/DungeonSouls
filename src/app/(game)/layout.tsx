@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { logoutAction } from "@/app/(auth)/actions";
 import { Logo } from "@/components/layout/logo";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,12 @@ export default async function GameLayout({ children }: LayoutProps<"/">) {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
           <Logo />
           <div className="flex items-center gap-3 text-sm">
+            <Link href="/characters" className="text-bone-300 hover:text-bone-100">
+              Personajes
+            </Link>
+            <Link href="/party" className="text-bone-300 hover:text-bone-100" data-testid="nav-party">
+              Grupo
+            </Link>
             <span className="hidden text-bone-300 sm:inline" data-testid="current-user">
               {user.username}
             </span>

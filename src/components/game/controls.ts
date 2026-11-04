@@ -1,9 +1,11 @@
 import { quantizeDirection } from "@/game/simulation/input";
-import { BUTTON_ATTACK, BUTTON_DODGE, BUTTON_POTION, type PlayerInput, SKILL_BUTTONS } from "@/game/simulation/types";
+import { BUTTON_ATTACK, BUTTON_DODGE, BUTTON_INTERACT, BUTTON_POTION, type PlayerInput, SKILL_BUTTONS } from "@/game/simulation/types";
 
 /** Teclas de los huecos de habilidad (BASIC_1..3, ULTIMATE) y de la poción. */
 export const SKILL_KEYS = ["q", "e", "r", "f"] as const;
 export const POTION_KEY = "1";
+/** Mantener pulsada junto a un aliado derribado para reanimarlo (en grupo). */
+export const REVIVE_KEY = "g";
 
 /**
  * Traduce teclado, ratón y controles táctiles en intenciones de la simulación.
@@ -11,7 +13,7 @@ export const POTION_KEY = "1";
  *
  * Escritorio: WASD/flechas para moverse, ratón para apuntar, clic izquierdo o J para atacar,
  * Espacio/Mayús/K para esquivar, Q/E/R para las habilidades (clic derecho = Q), F para la
- * definitiva y 1 para beber una poción.
+ * definitiva, 1 para beber una poción y G (mantener) para reanimar a un aliado.
  */
 export class InputController {
   private keys = new Set<string>();
@@ -22,7 +24,7 @@ export class InputController {
   private pendingSkills = [false, false, false, false];
   private pendingPotion = false;
   /** Estado de los controles táctiles (lo actualiza el componente TouchControls). */
-  private touch = { moveX: 0, moveY: 0, attack: false, active: false };
+  private touch = { moveX: 0, moveY: 0, attack: false, interact: false, active: false };
   private cleanup: Array<() => void> = [];
 
   attach(canvas: HTMLCanvasElement) {
@@ -92,6 +94,11 @@ export class InputController {
     this.touch.active = true;
   }
 
+  setTouchInteract(down: boolean) {
+    this.touch.interact = down;
+    this.touch.active = true;
+  }
+
   pressDodge() {
     this.pendingDodge = true;
   }
@@ -128,6 +135,7 @@ export class InputController {
     let buttons = 0;
     if (this.mouseDown || k.has("j") || this.touch.attack) buttons |= BUTTON_ATTACK;
     if (this.pendingDodge) buttons |= BUTTON_DODGE;
+    if (k.has(REVIVE_KEY) || this.touch.interact) buttons |= BUTTON_INTERACT;
     this.pendingSkills.forEach((pressed, slot) => {
       if (pressed) buttons |= SKILL_BUTTONS[slot];
     });

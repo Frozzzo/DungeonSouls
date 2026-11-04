@@ -1,4 +1,6 @@
+import { BALANCE } from "@/game/balance";
 import { BOSS_DEFINITIONS } from "@/game/bosses/definitions";
+import { secondsToTicks } from "@/game/simulation/context";
 import { CLASS_DEFINITIONS } from "@/game/classes/definitions";
 import { getCombatKit } from "@/game/combat/kits";
 import { hasStatus } from "@/game/combat/status";
@@ -261,6 +263,30 @@ export class GameRenderer {
       ctx.globalAlpha = 1;
       ctx.shadowBlur = 0;
       this.drawFacing(p, pl.facing, pl.radius, "#07060a");
+      // En grupo: nombre de los aliados, derribados con su reanimación y desconectados.
+      if (curr.players.length > 1) {
+        if (pl.id !== this.localPlayerId) this.drawLabel(p, pl.radius, pl.name, "#ede6d6");
+        if (pl.life === "DOWNED") {
+          const total = secondsToTicks(BALANCE.multiplayer.revive.seconds);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, BALANCE.multiplayer.revive.radius * s, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(95,201,167,0.35)";
+          ctx.setLineDash([6, 6]);
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (pl.reviveProgress > 0) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, (pl.radius + 0.3) * s, -Math.PI / 2, -Math.PI / 2 + (Math.min(1, pl.reviveProgress / total) * Math.PI * 2));
+            ctx.strokeStyle = "#5fc9a7";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+          }
+          this.drawTag(p, pl.radius, pl.presence === "LEFT" ? "abandonó" : "derribado · mantén G", "#5fc9a7");
+        } else if (pl.presence === "DISCONNECTED") {
+          this.drawTag(p, pl.radius, "desconectado", "#9a96a8");
+        }
+      }
       if (hasStatus(pl.statuses, "SLOW")) this.drawTag(p, pl.radius, "ralentizado", "#9ad1ff");
       if (hasStatus(pl.statuses, "STUN")) this.drawTag(p, pl.radius, "aturdido", "#ffd166");
       // Arco del ataque cuerpo a cuerpo
@@ -442,6 +468,14 @@ export class GameRenderer {
     ctx.fillRect(x - 1, y - 1, w + 2, 6);
     ctx.fillStyle = color;
     ctx.fillRect(x, y, w * Math.max(0, ratio), 4);
+  }
+
+  private drawLabel(p: Vec, radius: number, text: string, color: string) {
+    const ctx = this.ctx;
+    ctx.font = "600 11px var(--font-inter), system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = color;
+    ctx.fillText(text, p.x, p.y - radius * this.scale - 8);
   }
 
   private drawTag(p: Vec, radius: number, text: string, color: string) {

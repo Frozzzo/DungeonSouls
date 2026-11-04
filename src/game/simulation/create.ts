@@ -29,7 +29,7 @@ export function emptyKills(): Record<EnemyKindId, number> {
 export function spawnEnemy(ctx: SimContext, id: number, kind: EnemyKindId, pos: Vec, summoned: boolean): EnemyEntity {
   const def = ENEMY_DEFINITIONS[kind];
   const scale = floorScaling(ctx.config.floor);
-  const hp = Math.round(def.health * scale.health * ctx.difficulty.enemyHealth);
+  const hp = Math.round(def.health * scale.health * ctx.difficulty.enemyHealth * ctx.party.enemyHealth);
   return {
     id,
     kind,
@@ -39,7 +39,7 @@ export function spawnEnemy(ctx: SimContext, id: number, kind: EnemyKindId, pos: 
     hp,
     maxHp: hp,
     armorReduction: armorReduction(def.armor, ctx.config.floor),
-    damage: Math.round(def.attack.damage * scale.damage * ctx.difficulty.enemyDamage),
+    damage: Math.round(def.attack.damage * scale.damage * ctx.difficulty.enemyDamage * ctx.party.enemyDamage),
     aggro: summoned,
     state: summoned ? "CHASE" : "IDLE",
     ticks: 0,
@@ -75,6 +75,11 @@ export function createInitialState(ctx: SimContext): SimState {
       resource: kit.resource.start === "FULL" ? p.stats.maxResource : 0,
       maxResource: p.stats.maxResource,
       life: "ALIVE",
+      presence: "CONNECTED",
+      reviveProgress: 0,
+      lastReviveTick: -1,
+      downs: 0,
+      revivesGiven: 0,
       action: { kind: "NONE" },
       attackCooldown: 0,
       dodgeCooldown: 0,
@@ -102,7 +107,7 @@ export function createInitialState(ctx: SimContext): SimState {
   let boss: SimState["boss"] = null;
   if (layout.boss) {
     const def = BOSS_DEFINITIONS[layout.boss.id];
-    const hp = Math.round(def.health * ctx.difficulty.bossHealth);
+    const hp = Math.round(def.health * ctx.difficulty.bossHealth * ctx.party.bossHealth);
     boss = {
       id: nextId++,
       bossId: def.id,
@@ -112,7 +117,7 @@ export function createInitialState(ctx: SimContext): SimState {
       hp,
       maxHp: hp,
       armorReduction: armorReduction(def.armor, config.floor),
-      damageMultiplier: ctx.difficulty.bossDamage,
+      damageMultiplier: ctx.difficulty.bossDamage * ctx.party.bossDamage,
       aggro: false,
       phase: 0,
       patternIndex: 0,

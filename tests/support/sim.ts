@@ -55,3 +55,9 @@ export function playWithBot(
   }
   return { segments: rec.segments, state, ctx };
 }
+
+/** Configuración de un grupo: un jugador por clase indicada (ids p1, p2…). */
+export function partyConfig(classes: ClassId[], level: number, floor: number, seed: number, options: TestConfigOptions = {}): SimConfig {
+  const players = classes.map((classId, i) => ({ ...testConfig(classId, level, floor, seed, options).players[0], id: `p${i + 1}`, name: `Jugador ${i + 1}` }));
+  return { ...testConfig(classes[0], level, floor, seed, options), players };
+}
