@@ -1,4 +1,4 @@
-// Esquema de las fases 1 (fundación) y 2 (combate). El diseño completo de todas las fases está en docs/modelo-datos.md.
+// Esquema de las fases 1 (fundación), 2 (combate), 3 (progresión) y 4 (multijugador). El diseño completo de todas las fases está en docs/modelo-datos.md.
 
 generator client {
   provider = "prisma-client"
@@ -20,8 +20,9 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  sessions   Session[]
-  characters Character[]
+  sessions    Session[]
+  characters  Character[]
+  partyMember PartyMember?
 }
 
 /// Sesiones de servidor. El navegador solo guarda un token aleatorio; aquí se guarda su hash SHA-256.
@@ -91,12 +92,102 @@ model Character {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   runs         DungeonRun[]
   rewardGrants RewardGrant[]
   items        ItemInstance[]
+  skills       CharacterSkill[]
+  loadout      CharacterLoadoutSlot[]
+  equipment    EquipmentSlot[]
+  consumables  ConsumableStack[]
+  materials    MaterialStack[]
+  partyMember  PartyMember?
 
   @@index([userId])
+}
+
+/// Rango de una habilidad aprendida. La definición vive en src/game/skills; aquí solo el progreso.
+model CharacterSkill {
+  id          String   @id @default(cuid())
+  characterId String
+  /// Id estable de la habilidad en el código ("tank-bulwark").
+  skillId     String
+  /// 1..maxRank de la definición (validado en el servicio; la BD exige ≥ 1).
+  rank        Int
+  unlockedAt  DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, skillId])
+}
+
+enum SkillSlot {
+  BASIC_1
+  BASIC_2
+  BASIC_3
+  ULTIMATE
+}
+
+/// Habilidades equipadas: como máximo una por hueco (4 en total) y sin repetir.
+model CharacterLoadoutSlot {
+  id          String    @id @default(cuid())
+  characterId String
+  slot        SkillSlot
+  skillId     String
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, slot])
+  @@unique([characterId, skillId])
+}
+
+enum EquipmentSlotId {
+  WEAPON
+  HELMET
+  CHEST
+  GLOVES
+  LEGS
+  BOOTS
+  ACCESSORY_1
+  ACCESSORY_2
+}
+
+/// Objeto equipado en un hueco. Un objeto solo puede estar en un hueco y no se puede borrar mientras está puesto.
+model EquipmentSlot {
+  id             String          @id @default(cuid())
+  characterId    String
+  slot           EquipmentSlotId
+  itemInstanceId String          @unique
+
+  character Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  item      ItemInstance @relation(fields: [itemInstanceId], references: [id], onDelete: NoAction)
+
+  @@unique([characterId, slot])
+}
+
+/// Consumibles apilables (pociones). `quantity` tiene tope por tipo (src/game/items/consumables.ts).
+model ConsumableStack {
+  id           String @id @default(cuid())
+  characterId  String
+  consumableId String
+  quantity     Int    @default(0)
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, consumableId])
+}
+
+/// Materiales obtenidos al desmontar objetos.
+model MaterialStack {
+  id          String @id @default(cuid())
+  characterId String
+  materialId  String
+  quantity    Int    @default(0)
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, materialId])
 }
 
 enum Difficulty {
@@ -136,6 +227,12 @@ model DungeonRun {
   /// Instantánea del personaje al empezar (nivel y puntos asignados), validada con Zod.
   levelAtStart     Int
   allocatedAtStart Json
+  /// Habilidades equipadas al empezar [{ skillId, rank } | null] × 4 (validado con Zod).
+  loadoutAtStart   Json?
+  /// Bonificación del equipo y efectos únicos al empezar (validado con Zod).
+  gearAtStart      Json?
+  /// Pociones con las que entra (ya limitadas por pociones por piso).
+  potionsAtStart   Int        @default(0)
   status      RunStatus  @default(ACTIVE)
   /// Envíos rechazados (entradas incompletas); al superar el máximo, el intento se abandona.
   rejectedSubmissions Int @default(0)
@@ -145,9 +242,17 @@ model DungeonRun {
   startedAt   DateTime   @default(now())
   endedAt     DateTime?
 
+  /// Fase 4: el intento forma parte de una expedición en grupo (la simula el servidor de partida;
+  /// nunca se valida por repetición). `partySlot` es su posición en la simulación.
+  expeditionId String?
+  partySlot    Int?
+
   character   Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  expedition  Expedition?  @relation(fields: [expeditionId], references: [id], onDelete: Cascade)
   rewardGrant RewardGrant?
 
+  @@unique([expeditionId, partySlot])
+  @@unique([expeditionId, characterId])
   @@index([characterId, status])
   @@index([characterId, startedAt])
 }
@@ -181,8 +286,77 @@ model ItemInstance {
   sourceRewardGrantId String?
   createdAt   DateTime   @default(now())
 
-  character   Character    @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  sourceGrant RewardGrant? @relation(fields: [sourceRewardGrantId], references: [id], onDelete: SetNull)
+  character   Character      @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  sourceGrant RewardGrant?   @relation(fields: [sourceRewardGrantId], references: [id], onDelete: SetNull)
+  equippedIn  EquipmentSlot?
 
   @@index([characterId, createdAt])
+}
+
+enum PartyStatus {
+  OPEN
+  IN_EXPEDITION
+  CLOSED
+}
+
+/// Grupo de hasta 4 jugadores (BALANCE.multiplayer.maxPartySize), unido con un código.
+model Party {
+  id           String      @id @default(cuid())
+  /// 6 caracteres sin ambigüedades (sin 0/O, 1/I/L).
+  code         String      @unique
+  leaderUserId String
+  status       PartyStatus @default(OPEN)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  members     PartyMember[]
+  expeditions Expedition[]
+
+  @@index([status])
+}
+
+/// Miembro de un grupo activo. Un usuario (y un personaje) solo está en un grupo a la vez.
+model PartyMember {
+  id          String   @id @default(cuid())
+  partyId     String
+  userId      String   @unique
+  characterId String   @unique
+  ready       Boolean  @default(false)
+  joinedAt    DateTime @default(now())
+
+  party     Party     @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([partyId])
+}
+
+enum ExpeditionStatus {
+  ACTIVE
+  COMPLETED
+  DEFEATED
+  ABANDONED
+}
+
+/// Expedición en grupo: un piso jugado en el servidor de partida. Piso, dificultad, semilla y
+/// versión de reglas se fijan al crearla. Cada participante tiene su DungeonRun (instantánea y recompensa).
+model Expedition {
+  id          String           @id @default(cuid())
+  partyId     String
+  floor       Int
+  difficulty  Difficulty       @default(NORMAL)
+  seed        Int
+  simVersion  Int
+  /// Jugadores al empezar (escalado de enemigos).
+  playerCount Int
+  status      ExpeditionStatus @default(ACTIVE)
+  /// Resultado firmado recibido del servidor de partida (validado con Zod).
+  result      Json?
+  startedAt   DateTime         @default(now())
+  endedAt     DateTime?
+
+  party Party        @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  runs  DungeonRun[]
+
+  @@index([partyId, status])
 }

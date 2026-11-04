@@ -1,11 +1,17 @@
 import { BALANCE } from "../balance";
 import { getCombatKit } from "../combat/kits";
 import { applyStatus, isIncapacitated, moveMultiplier, tickStatuses } from "../combat/status";
-import { inCone, length, normalize, type Vec } from "../math/vec";
+import { DODGE_EMPOWER_BONUS } from "../items/bases";
+import { CONSUMABLES } from "../items/consumables";
+import { distance, inCone, length, normalize, type Vec } from "../math/vec";
+import type { SkillEffect } from "../skills/definitions";
 import { DT, type SimContext, secondsToTicks } from "./context";
-import { damageBoss, damageEnemy, rollPlayerDamage } from "./hits";
+import { damageBoss, damageEnemy, healPlayer, rollPlayerDamage } from "./hits";
 import { moveCircle } from "./navigation";
-import { AXIS_MAX, BUTTON_ABILITY, BUTTON_ATTACK, BUTTON_DODGE, type PlayerEntity, type PlayerInput, type SimState } from "./types";
+import { AXIS_MAX, BUTTON_ATTACK, BUTTON_DODGE, BUTTON_INTERACT, BUTTON_POTION, type EnemyEntity, type PlayerEntity, type PlayerInput, SKILL_BUTTONS, type SimState } from "./types";
+
+/** La curación periódica (REGEN) se aplica cada medio segundo. */
+export const REGEN_PULSE_TICKS = 10;
 
 const DODGE = BALANCE.combat.dodge;
 
@@ -19,14 +25,18 @@ function axisVector(x: number, y: number): Vec | null {
 
 /** Avanza un jugador un tick según su intención. Todas las reglas (enfriamientos, coste, estados) se validan aquí. */
 export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEntity, input: PlayerInput): void {
-  if (player.life !== "ALIVE") return;
+  if (player.life !== "ALIVE" || player.presence !== "CONNECTED") return;
   const kit = getCombatKit(player.classId);
 
   // Temporizadores y estados.
   player.statuses = tickStatuses(player.statuses);
+  for (const status of player.statuses) {
+    if (status.id === "REGEN" && status.ticks % REGEN_PULSE_TICKS === 0) healPlayer(state, player, status.value);
+  }
   if (player.attackCooldown > 0) player.attackCooldown--;
   if (player.dodgeCooldown > 0) player.dodgeCooldown--;
-  if (player.abilityCooldown > 0) player.abilityCooldown--;
+  for (let i = 0; i < player.skillCooldowns.length; i++) if (player.skillCooldowns[i] > 0) player.skillCooldowns[i]--;
+  if (player.potionCooldown > 0) player.potionCooldown--;
   if (player.invulnerable > 0) player.invulnerable--;
   if (player.dodgeBuffer > 0) player.dodgeBuffer--;
   if (kit.resource.regenPerSecond > 0) {
@@ -39,6 +49,19 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
   if (input.buttons & BUTTON_DODGE) player.dodgeBuffer = secondsToTicks(DODGE.inputBuffer);
 
   if (isIncapacitated(player.statuses)) return;
+
+  // Poción: se bebe al instante (también en mitad de un ataque); limitada y con enfriamiento.
+  if (input.buttons & BUTTON_POTION && player.potions > 0 && player.potionCooldown === 0 && player.hp < player.maxHp) {
+    const potion = CONSUMABLES.HEALTH_POTION;
+    player.potions--;
+    player.potionCooldown = secondsToTicks(potion.cooldown);
+    state.summary.potionsUsed++;
+    const healed = healPlayer(state, player, Math.round(player.maxHp * potion.healRatio), false);
+    state.events.push({ type: "POTION", actorId: player.id, amount: healed, pos: { ...player.pos } });
+  }
+
+  // Reanimar: mantener pulsado, quieto y sin otra acción, junto a un aliado derribado.
+  if (input.buttons & BUTTON_INTERACT && player.action.kind === "NONE" && channelRevive(state, player)) return;
 
   const action = player.action;
 
@@ -75,6 +98,7 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
     player.invulnerable = secondsToTicks(DODGE.invulnerability);
     player.dodgeBuffer = 0;
     player.facing = dir;
+    if (player.uniqueEffects.includes("DODGE_EMPOWER")) player.nextHitBonus = DODGE_EMPOWER_BONUS;
     state.summary.dodges++;
     return;
   }
@@ -89,9 +113,13 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
 
   if (player.action.kind !== "NONE") return;
 
-  // Habilidad característica: comprueba enfriamiento y recurso.
-  if (input.buttons & BUTTON_ABILITY && player.abilityCooldown === 0 && player.resource >= kit.ability.cost) {
-    castAbility(state, player);
+  // Habilidades equipadas: comprueba hueco, enfriamiento y recurso (el primer botón válido gana).
+  for (let slot = 0; slot < SKILL_BUTTONS.length; slot++) {
+    if (!(input.buttons & SKILL_BUTTONS[slot])) continue;
+    const skill = player.skills[slot];
+    if (!skill || player.skillCooldowns[slot] > 0 || player.resource < skill.resourceCost) continue;
+    if (aim) player.facing = aim;
+    castSkill(ctx, state, player, slot);
     return;
   }
 
@@ -104,10 +132,42 @@ export function updatePlayer(ctx: SimContext, state: SimState, player: PlayerEnt
   }
 }
 
+const REVIVE = BALANCE.multiplayer.revive;
+
+/** Avanza la reanimación del aliado derribado más cercano. Devuelve true si el jugador está reanimando. */
+function channelRevive(state: SimState, player: PlayerEntity): boolean {
+  let target: PlayerEntity | null = null;
+  let best = REVIVE.radius + player.radius;
+  for (const ally of state.players) {
+    if (ally === player || ally.life !== "DOWNED" || ally.presence === "LEFT") continue;
+    // Un aliado por tick: si otro ya lo está reanimando, no se acelera.
+    if (ally.lastReviveTick === state.tick) continue;
+    const d = distance(ally.pos, player.pos);
+    if (d <= best) {
+      best = d;
+      target = ally;
+    }
+  }
+  if (!target) return false;
+  target.lastReviveTick = state.tick;
+  target.reviveProgress++;
+  if (target.reviveProgress >= secondsToTicks(REVIVE.seconds)) {
+    target.life = "ALIVE";
+    target.hp = Math.max(1, Math.round(target.maxHp * REVIVE.healthRatio));
+    target.reviveProgress = 0;
+    target.invulnerable = secondsToTicks(REVIVE.invulnerability);
+    target.action = { kind: "NONE" };
+    player.revivesGiven++;
+    state.events.push({ type: "PLAYER_REVIVED", playerId: target.id, byId: player.id, pos: { ...target.pos } });
+  }
+  return true;
+}
+
 function resolveBasicAttack(state: SimState, player: PlayerEntity, dir: Vec) {
   const basic = getCombatKit(player.classId).basic;
   if (basic.kind === "PROJECTILE") {
     const roll = rollPlayerDamage(state, player, basic.multiplier, basic.damageType);
+    player.nextHitBonus = 0;
     state.projectiles.push({
       id: state.nextId++,
       team: "PLAYER",
@@ -133,36 +193,109 @@ function resolveBasicAttack(state: SimState, player: PlayerEntity, dir: Vec) {
     const roll = rollPlayerDamage(state, player, basic.multiplier, basic.damageType);
     damageBoss(state, player, boss, roll.amount, roll.crit);
   }
+  player.nextHitBonus = 0;
 }
 
-function castAbility(state: SimState, player: PlayerEntity) {
-  const { ability } = getCombatKit(player.classId);
-  player.resource -= ability.cost;
-  player.abilityCooldown = secondsToTicks(ability.cooldown);
-  state.events.push({ type: "ABILITY", actorId: player.id, abilityId: ability.id, pos: { ...player.pos } });
-  const effect = ability.effect;
+/** Lanza la habilidad del hueco `slot`. La validación (enfriamiento, recurso) ya está hecha. */
+function castSkill(ctx: SimContext, state: SimState, player: PlayerEntity, slot: number) {
+  const skill = player.skills[slot]!;
+  player.resource -= skill.resourceCost;
+  player.skillCooldowns[slot] = Math.max(1, secondsToTicks(skill.cooldown));
+  state.summary.skillsUsed++;
+  const dir = { ...player.facing };
+  state.events.push({ type: "ABILITY", actorId: player.id, abilityId: skill.id, slot, pos: { ...player.pos }, dir });
+  for (const effect of skill.effects) applySkillEffect(ctx, state, player, effect, dir);
+  player.nextHitBonus = 0;
+}
+
+/** Cantidad de las curaciones y escudos: (base + daño mágico × escala + vida máx. × proporción) × curación realizada. */
+function supportAmount(player: PlayerEntity, e: { base: number; magicScaling: number; maxHpRatio: number }): number {
+  return Math.max(0, Math.round((e.base + player.stats.magicDamage * e.magicScaling + player.maxHp * e.maxHpRatio) * player.stats.healingPower));
+}
+
+function applyToEnemy(enemy: EnemyEntity, applies: { status: "SLOW" | "STUN"; duration: number } | undefined) {
+  if (applies && enemy.hp > 0) applyStatus(enemy.statuses, applies.status, secondsToTicks(applies.duration));
+}
+
+function applySkillEffect(ctx: SimContext, state: SimState, player: PlayerEntity, effect: SkillEffect, dir: Vec) {
   switch (effect.kind) {
     case "FORTIFY":
       applyStatus(player.statuses, "FORTIFIED", secondsToTicks(effect.duration), effect.reduction);
       break;
-    case "HEAL": {
-      const amount = Math.round((effect.base + player.stats.magicDamage * effect.magicScaling) * player.stats.healingPower);
-      const healed = Math.min(player.maxHp - player.hp, amount);
-      player.hp += healed;
-      state.events.push({ type: "HEAL", targetId: player.id, amount: healed, pos: { ...player.pos } });
+    case "EMPOWER":
+      applyStatus(player.statuses, "EMPOWERED", secondsToTicks(effect.duration), effect.bonus);
+      break;
+    case "HEAL":
+      healPlayer(state, player, supportAmount(player, effect));
+      break;
+    case "BARRIER": {
+      const amount = supportAmount(player, effect);
+      // La barrera nueva sustituye a la anterior si es mayor (no se acumulan).
+      applyStatus(player.statuses, "BARRIER", secondsToTicks(effect.duration), amount);
       break;
     }
-    case "WHIRLWIND": {
+    case "REGEN": {
+      const ticks = secondsToTicks(effect.duration);
+      const pulses = Math.max(1, Math.floor((ticks - 1) / REGEN_PULSE_TICKS));
+      applyStatus(player.statuses, "REGEN", ticks, Math.max(1, Math.round(supportAmount(player, effect) / pulses)));
+      break;
+    }
+    case "NOVA":
+    case "CONE": {
+      const range = effect.kind === "NOVA" ? effect.radius : effect.range;
+      const cos = effect.kind === "NOVA" ? -1 : effect.cosHalfAngle;
       for (const enemy of state.enemies) {
-        if (enemy.hp > 0 && inCone(player.pos, player.facing, enemy.pos, effect.radius, -1, enemy.radius)) {
+        if (enemy.hp > 0 && inCone(player.pos, dir, enemy.pos, range, cos, enemy.radius)) {
           const roll = rollPlayerDamage(state, player, effect.multiplier, effect.damageType);
           damageEnemy(state, player, enemy, roll.amount, roll.crit, player.pos);
+          applyToEnemy(enemy, effect.applies);
         }
       }
       const boss = state.boss;
-      if (boss && boss.hp > 0 && inCone(player.pos, player.facing, boss.pos, effect.radius, -1, boss.radius)) {
+      if (boss && boss.hp > 0 && inCone(player.pos, dir, boss.pos, range, cos, boss.radius)) {
         const roll = rollPlayerDamage(state, player, effect.multiplier, effect.damageType);
         damageBoss(state, player, boss, roll.amount, roll.crit);
+      }
+      break;
+    }
+    case "PROJECTILE": {
+      const roll = rollPlayerDamage(state, player, effect.multiplier, effect.damageType);
+      state.projectiles.push({
+        id: state.nextId++,
+        team: "PLAYER",
+        ownerId: player.id,
+        pos: { x: player.pos.x + dir.x * 0.5, y: player.pos.y + dir.y * 0.5 },
+        vel: { x: dir.x * effect.speed * DT, y: dir.y * effect.speed * DT },
+        radius: effect.radius,
+        damage: roll.amount,
+        crit: roll.crit,
+        ticksLeft: Math.ceil(effect.range / (effect.speed * DT)),
+        applies: effect.applies ? { status: effect.applies.status, ticks: secondsToTicks(effect.applies.duration) } : null,
+      });
+      break;
+    }
+    case "DASH": {
+      // Avanza a pasos cortos (respetando muros) y golpea una vez a cada enemigo que atraviesa.
+      player.invulnerable = Math.max(player.invulnerable, secondsToTicks(effect.invulnerability));
+      const hitEnemies = new Set<number>();
+      let hitBoss = false;
+      const stepLen = 0.25;
+      const steps = Math.ceil(effect.distance / stepLen);
+      for (let i = 0; i < steps; i++) {
+        player.pos = moveCircle(ctx.layout, player.pos, dir.x * stepLen, dir.y * stepLen, player.radius);
+        for (const enemy of state.enemies) {
+          if (enemy.hp > 0 && !hitEnemies.has(enemy.id) && distance(enemy.pos, player.pos) <= enemy.radius + effect.width) {
+            hitEnemies.add(enemy.id);
+            const roll = rollPlayerDamage(state, player, effect.multiplier, effect.damageType);
+            damageEnemy(state, player, enemy, roll.amount, roll.crit, player.pos);
+          }
+        }
+        const boss = state.boss;
+        if (!hitBoss && boss && boss.hp > 0 && distance(boss.pos, player.pos) <= boss.radius + effect.width) {
+          hitBoss = true;
+          const roll = rollPlayerDamage(state, player, effect.multiplier, effect.damageType);
+          damageBoss(state, player, boss, roll.amount, roll.crit);
+        }
       }
       break;
     }

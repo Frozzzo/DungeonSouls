@@ -1,9 +1,16 @@
 import type { BossId } from "../bosses/definitions";
 import type { ArmorWeight, WeaponType } from "../classes/definitions";
 
-/** Categorías de equipo (huecos). Los consumibles llegan en la Fase 3. */
+/** Categorías de equipo. Los accesorios ocupan dos huecos (ver equipment.ts). */
 export const ITEM_CATEGORIES = ["WEAPON", "HELMET", "CHEST", "GLOVES", "LEGS", "BOOTS", "ACCESSORY"] as const;
 export type ItemCategory = (typeof ITEM_CATEGORIES)[number];
+
+/** Efectos únicos que entiende la simulación. */
+export const UNIQUE_EFFECT_IDS = ["DODGE_EMPOWER"] as const;
+export type UniqueEffectId = (typeof UNIQUE_EFFECT_IDS)[number];
+
+/** Bonificación al siguiente golpe tras esquivar (efecto DODGE_EMPOWER). */
+export const DODGE_EMPOWER_BONUS = 0.3;
 
 export interface BaseItem {
   id: string;
@@ -21,8 +28,10 @@ export interface BaseItem {
   implicit: { kind: "DAMAGE" | "ARMOR"; value: number } | null;
   /** Solo lo suelta este jefe (recompensa exclusiva). */
   exclusiveTo?: BossId;
-  /** Efecto único (se activa con el sistema de equipo de la Fase 3). */
+  /** Texto del efecto único. */
   uniqueEffect?: string;
+  /** Efecto único que aplica la simulación mientras el objeto está equipado. */
+  uniqueEffectId?: UniqueEffectId;
 }
 
 const weapon = (id: string, name: string, weaponType: WeaponType, value: number, description: string): BaseItem => ({
@@ -99,7 +108,8 @@ export const BASE_ITEMS: readonly BaseItem[] = [
     requiredLevel: 1,
     implicit: null,
     exclusiveTo: "ASH_JAILER",
-    uniqueEffect: "Tras esquivar un ataque, tu siguiente golpe inflige un 30 % más de daño (se activa con el equipo de la Fase 3).",
+    uniqueEffect: "Tras esquivar, tu siguiente golpe o habilidad inflige un 30 % más de daño.",
+    uniqueEffectId: "DODGE_EMPOWER",
   },
 ];
 

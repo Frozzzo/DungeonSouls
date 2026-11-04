@@ -11,6 +11,9 @@ import { characterIdSchema } from "@/lib/validation/character";
 import { requireUser } from "@/server/auth/current-user";
 import { getOwnedCharacter } from "@/server/characters/service";
 import { getActiveRunId, listRecentRuns, unlockedFloors } from "@/server/dungeon/service";
+import { getSkillTree } from "@/server/skills/service";
+import { getPotionCount } from "@/server/inventory/service";
+import { potionsForRun } from "@/game/items/consumables";
 import { StartRunButton } from "@/components/dungeon/start-run-button";
 import { buttonStyles } from "@/components/ui/button";
 import { isBossFloor, MAX_FLOOR } from "@/game/dungeon/floors";
@@ -29,7 +32,12 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
 
   const def = getClassDefinition(character.classId);
   const { derived } = character.stats;
-  const [activeRunId, history] = await Promise.all([getActiveRunId(user.id, character.id), listRecentRuns(user.id, character.id)]);
+  const [activeRunId, history, tree, potions] = await Promise.all([
+    getActiveRunId(user.id, character.id),
+    listRecentRuns(user.id, character.id),
+    getSkillTree(user.id, character.id),
+    getPotionCount(user.id, character.id),
+  ]);
   const floors = unlockedFloors(character.highestFloorCleared);
   const nextFloor = floors[floors.length - 1];
 
@@ -75,6 +83,9 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
               {character.highestFloorCleared > 0 ? `Piso más profundo completado: ${character.highestFloorCleared}` : "Aún no has completado ningún piso."}
             </p>
             <p className="text-xs text-bone-500">El piso {MAX_FLOOR} guarda al primer jefe. Dificultad: Normal (las demás llegan en la Fase 5).</p>
+            <p className="text-xs text-bone-500" data-testid="run-potions-preview">
+              Pociones: {potions} (entras con {potionsForRun(potions)}).
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             {activeRunId ? (
@@ -83,6 +94,9 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
               </Link>
             ) : null}
             <StartRunButton characterId={character.id} floor={nextFloor} label={`Entrar al piso ${nextFloor}`} />
+            <Link href={`/characters/${character.id}/skills`} className={buttonStyles("ghost")}>
+              Habilidades
+            </Link>
             <Link href={`/characters/${character.id}/inventory`} className={buttonStyles("ghost")}>
               Inventario
             </Link>
@@ -128,6 +142,7 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
               allocated={character.allocated}
               availablePoints={character.statPoints}
               stats={character.stats}
+              gear={character.gear}
             />
           ) : (
             <StatsPanel stats={character.stats} />
@@ -135,16 +150,23 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
         </section>
 
         <aside className="space-y-6">
-          <section className="panel rounded-xl p-6">
-            <h2 className="mb-3 font-display text-xl">Ramas de habilidad</h2>
+          <section className="panel rounded-xl p-6" aria-labelledby="skills-summary">
+            <div className="mb-3 flex items-baseline justify-between gap-2">
+              <h2 id="skills-summary" className="font-display text-xl">
+                Habilidades
+              </h2>
+              <Link href={`/characters/${character.id}/skills`} className="text-xs text-ember-400 hover:text-ember-300" data-testid="open-skills">
+                Árbol →
+              </Link>
+            </div>
             <p className="mb-3 text-xs text-bone-500">
-              Puntos de habilidad: <span className="text-gold-400">{character.skillPoints}</span>. El árbol completo llega en la fase 3.
+              Puntos de habilidad: <span className="text-gold-400">{character.skillPoints}</span>
             </p>
-            <ul className="space-y-3">
-              {def.skillBranches.map((b) => (
-                <li key={b.id}>
-                  <p className="text-sm font-semibold">{b.name}</p>
-                  <p className="text-xs text-bone-300">{b.description}</p>
+            <ul className="space-y-1.5 text-sm">
+              {tree?.loadout.map(({ slot, skill }) => (
+                <li key={slot} className="flex justify-between gap-2">
+                  <span className="text-bone-500">{slot === "ULTIMATE" ? "Definitiva" : `Hueco ${slot.slice(-1)}`}</span>
+                  <span className={skill ? "text-bone-100" : "text-bone-500"}>{skill ? `${skill.name} R${skill.rank}` : "Vacío"}</span>
                 </li>
               ))}
             </ul>

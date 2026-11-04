@@ -6,7 +6,7 @@ import { DIRECTIONS_16, distance, dot, inCone, normalize, type Vec } from "../ma
 import { DT, type SimContext } from "./context";
 import { quantizeDirection } from "./input";
 import { flowDirection, flowDistance, flowFieldTo } from "./navigation";
-import { BUTTON_ABILITY, BUTTON_ATTACK, BUTTON_DODGE, IDLE_INPUT, type PlayerEntity, type PlayerInput, type SimState, type Telegraph } from "./types";
+import { BUTTON_ATTACK, BUTTON_DODGE, BUTTON_POTION, IDLE_INPUT, type PlayerEntity, type PlayerInput, SKILL_BUTTONS, type SimState, type Telegraph } from "./types";
 
 /**
  * Piloto automático: una política sencilla que juega usando solo la información que vería
@@ -38,18 +38,9 @@ export function botInput(ctx: SimContext, state: SimState, playerIndex = 0): Pla
     return input(threat.away, null, 0);
   }
 
-  // 2) Habilidad.
-  let buttons = 0;
-  if (p.abilityCooldown === 0 && p.resource >= kit.ability.cost) {
-    const effect = kit.ability.effect;
-    if (effect.kind === "HEAL" && p.hp < p.maxHp * 0.55) buttons |= BUTTON_ABILITY;
-    if (effect.kind === "FORTIFY" && (p.hp < p.maxHp * 0.7 || (state.boss && state.boss.hp > 0 && distance(p.pos, state.boss.pos) < 4))) buttons |= BUTTON_ABILITY;
-    if (effect.kind === "WHIRLWIND") {
-      const near = state.enemies.filter((e) => distance(e.pos, p.pos) <= effect.radius + e.radius).length;
-      const bossNear = state.boss && state.boss.hp > 0 && distance(state.boss.pos, p.pos) <= effect.radius + state.boss.radius;
-      if (near >= 2 || bossNear || (near === 1 && p.resource >= p.maxResource * 0.9)) buttons |= BUTTON_ABILITY;
-    }
-  }
+  // 2) Habilidades y pociones.
+  let buttons = skillButtons(state, p);
+  if (p.potions > 0 && p.potionCooldown === 0 && p.hp < p.maxHp * 0.35) buttons |= BUTTON_POTION;
 
   // 3) Elegir objetivo.
   const target = pickTarget(ctx, state, p);
@@ -241,3 +232,49 @@ function input(move: Vec | null, aim: Vec | null, buttons: number): PlayerInput 
   return { mx: m.x, my: m.y, ax: a.x, ay: a.y, buttons };
 }
 
+
+/** ¿Merece la pena usar ahora alguna habilidad equipada? Decide por el primer efecto de cada una. */
+function skillButtons(state: SimState, p: PlayerEntity): number {
+  const boss = state.boss && state.boss.hp > 0 ? state.boss : null;
+  const near = (r: number) => state.enemies.filter((e) => distance(e.pos, p.pos) <= r + e.radius).length;
+  const bossWithin = (r: number) => boss !== null && distance(boss.pos, p.pos) <= r + boss.radius;
+  const inFront = (range: number, cos: number) =>
+    state.enemies.some((e) => inCone(p.pos, p.facing, e.pos, range, cos, e.radius)) || (boss !== null && inCone(p.pos, p.facing, boss.pos, range, cos, boss.radius));
+  for (let slot = 0; slot < p.skills.length; slot++) {
+    const skill = p.skills[slot];
+    if (!skill || p.skillCooldowns[slot] > 0 || p.resource < skill.resourceCost) continue;
+    const e = skill.effects[0];
+    let use = false;
+    switch (e.kind) {
+      case "HEAL":
+        use = p.hp < p.maxHp * 0.55;
+        break;
+      case "REGEN":
+        use = p.hp < p.maxHp * 0.75;
+        break;
+      case "FORTIFY":
+      case "BARRIER":
+        use = p.hp < p.maxHp * 0.7 || bossWithin(4) || near(2.5) >= 2;
+        break;
+      case "EMPOWER":
+        use = near(2.5) >= 1 || bossWithin(2.5);
+        break;
+      case "NOVA": {
+        const count = near(e.radius);
+        use = count >= 2 || bossWithin(e.radius) || (count === 1 && p.resource >= p.maxResource * 0.9);
+        break;
+      }
+      case "CONE":
+        use = inFront(e.range, e.cosHalfAngle);
+        break;
+      case "PROJECTILE":
+        use = inFront(e.range - 1, 0.95);
+        break;
+      case "DASH":
+        // El piloto no usa desplazamientos: podrían meterle en un telegráfico.
+        break;
+    }
+    if (use) return SKILL_BUTTONS[slot];
+  }
+  return 0;
+}

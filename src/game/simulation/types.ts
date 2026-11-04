@@ -2,6 +2,8 @@ import type { BossAttackId, BossId } from "../bosses/definitions";
 import type { ActiveStatus } from "../combat/status";
 import type { DifficultyId } from "../difficulty/definitions";
 import type { EnemyKindId } from "../enemies/definitions";
+import type { UniqueEffectId } from "../items/bases";
+import type { EquippedSkill, ResolvedSkill } from "../skills/rules";
 import type { Vec } from "../math/vec";
 import type { ClassId, DerivedStats } from "../types";
 
@@ -9,15 +11,23 @@ import type { ClassId, DerivedStats } from "../types";
  * Versión de las reglas de simulación. Si cambia, las partidas empezadas con otra versión no
  * pueden validarse (la repetición daría otro resultado) y se descartan.
  */
-export const SIM_VERSION = 1;
+export const SIM_VERSION = 3;
 
 // ---------------------------------------------------------------- Entradas
 
 /** Bits del campo `buttons` de una entrada. */
 export const BUTTON_ATTACK = 1;
 export const BUTTON_DODGE = 2;
-export const BUTTON_ABILITY = 4;
-export const BUTTON_MASK = BUTTON_ATTACK | BUTTON_DODGE | BUTTON_ABILITY;
+/** Habilidades equipadas: 3 básicas y la definitiva, en el orden de los huecos. */
+export const BUTTON_SKILL_1 = 4;
+export const BUTTON_SKILL_2 = 8;
+export const BUTTON_SKILL_3 = 16;
+export const BUTTON_ULTIMATE = 32;
+export const BUTTON_POTION = 64;
+/** Mantener pulsado junto a un aliado derribado para reanimarlo (Fase 4). */
+export const BUTTON_INTERACT = 128;
+export const SKILL_BUTTONS = [BUTTON_SKILL_1, BUTTON_SKILL_2, BUTTON_SKILL_3, BUTTON_ULTIMATE] as const;
+export const BUTTON_MASK = BUTTON_ATTACK | BUTTON_DODGE | BUTTON_SKILL_1 | BUTTON_SKILL_2 | BUTTON_SKILL_3 | BUTTON_ULTIMATE | BUTTON_POTION | BUTTON_INTERACT;
 
 /** Escala de los ejes cuantizados: los ejes son enteros en [-AXIS_MAX, AXIS_MAX]. */
 export const AXIS_MAX = 100;
@@ -45,8 +55,14 @@ export interface SimPlayerConfig {
   name: string;
   classId: ClassId;
   level: number;
-  /** Estadísticas derivadas calculadas en el servidor (computeCharacterStats). */
+  /** Estadísticas derivadas calculadas en el servidor (computeCharacterStats, equipo incluido). */
   stats: DerivedStats;
+  /** Habilidades equipadas por hueco (BASIC_1..3, ULTIMATE), con su rango. */
+  loadout: readonly (EquippedSkill | null)[];
+  /** Pociones que lleva al piso (ya limitadas por el servidor). */
+  potions: number;
+  /** Efectos únicos del equipo. */
+  uniqueEffects: readonly UniqueEffectId[];
 }
 
 /** Todo lo necesario para reproducir una partida. Lo construye el servidor. */
@@ -84,16 +100,39 @@ export interface PlayerEntity {
   resource: number;
   maxResource: number;
   life: "ALIVE" | "DOWNED";
+  /**
+   * Conexión del jugador (la fija el servidor de partida, nunca la simulación).
+   * DISCONNECTED: no actúa, los enemigos lo ignoran y no recibe daño. LEFT: abandonó (definitivo).
+   * En la partida de un jugador siempre es CONNECTED.
+   */
+  presence: PlayerPresence;
+  /** Progreso de la reanimación (ticks) mientras está derribado. */
+  reviveProgress: number;
+  /** Último tick en que un aliado avanzó su reanimación (si no avanza, se pierde). */
+  lastReviveTick: number;
+  /** Veces que ha caído y veces que ha reanimado a un aliado. */
+  downs: number;
+  revivesGiven: number;
   action: PlayerAction;
   attackCooldown: number;
   dodgeCooldown: number;
-  abilityCooldown: number;
+  /** Habilidades resueltas por hueco (null = hueco vacío). */
+  skills: (ResolvedSkill | null)[];
+  /** Enfriamiento restante (ticks) de cada hueco. */
+  skillCooldowns: number[];
+  potions: number;
+  potionCooldown: number;
+  uniqueEffects: UniqueEffectId[];
+  /** Bonificación de daño pendiente para el siguiente golpe (efecto único). */
+  nextHitBonus: number;
   invulnerable: number;
   dodgeBuffer: number;
   statuses: ActiveStatus[];
   /** Último tick en que recibió daño (para efectos visuales). */
   lastHurtTick: number;
 }
+
+export type PlayerPresence = "CONNECTED" | "DISCONNECTED" | "LEFT";
 
 export type EnemyState = "IDLE" | "CHASE" | "WINDUP" | "RECOVERY";
 
@@ -156,7 +195,7 @@ export interface Projectile {
   damage: number;
   crit: boolean;
   ticksLeft: number;
-  applies: { status: "SLOW"; ticks: number } | null;
+  applies: { status: "SLOW" | "STUN"; ticks: number } | null;
 }
 
 export interface RingHazard {
@@ -177,11 +216,14 @@ export type SimEvent =
   | { type: "HEAL"; targetId: string; amount: number; pos: Vec }
   | { type: "DODGED"; targetId: string; pos: Vec }
   | { type: "ATTACK"; actorId: string; pos: Vec; dir: Vec }
-  | { type: "ABILITY"; actorId: string; abilityId: string; pos: Vec }
+  | { type: "ABILITY"; actorId: string; abilityId: string; slot: number; pos: Vec; dir: Vec }
+  | { type: "POTION"; actorId: string; amount: number; pos: Vec }
+  | { type: "ABSORBED"; targetId: string; amount: number; pos: Vec }
   | { type: "ENEMY_DIED"; enemyId: number; kind: EnemyKindId; pos: Vec }
   | { type: "BOSS_PHASE"; phase: number; name: string }
   | { type: "BOSS_DIED"; pos: Vec }
   | { type: "PLAYER_DOWNED"; playerId: string; pos: Vec }
+  | { type: "PLAYER_REVIVED"; playerId: string; byId: string; pos: Vec }
   | { type: "PORTAL_OPEN"; pos: Vec };
 
 export type SimStatus = "RUNNING" | "VICTORY" | "DEFEAT";
@@ -192,6 +234,9 @@ export interface SimSummary {
   damageDealt: number;
   damageTaken: number;
   dodges: number;
+  /** Pociones bebidas (el servidor las descuenta del inventario). */
+  potionsUsed: number;
+  skillsUsed: number;
 }
 
 export interface SimState {

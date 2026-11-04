@@ -6,7 +6,9 @@ import { circleFits } from "../dungeon/grid";
 import { floorScaling } from "../dungeon/floors";
 import { ENEMY_DEFINITIONS, ENEMY_KIND_IDS, type EnemyKindId } from "../enemies/definitions";
 import type { Vec } from "../math/vec";
+import { CONSUMABLES } from "../items/consumables";
 import { deriveSeed } from "../random/rng";
+import { LOADOUT_SLOTS, resolveSkill, slotKind } from "../skills/rules";
 import type { SimContext } from "./context";
 import type { EnemyEntity, PlayerEntity, SimState } from "./types";
 
@@ -27,7 +29,7 @@ export function emptyKills(): Record<EnemyKindId, number> {
 export function spawnEnemy(ctx: SimContext, id: number, kind: EnemyKindId, pos: Vec, summoned: boolean): EnemyEntity {
   const def = ENEMY_DEFINITIONS[kind];
   const scale = floorScaling(ctx.config.floor);
-  const hp = Math.round(def.health * scale.health * ctx.difficulty.enemyHealth);
+  const hp = Math.round(def.health * scale.health * ctx.difficulty.enemyHealth * ctx.party.enemyHealth);
   return {
     id,
     kind,
@@ -37,7 +39,7 @@ export function spawnEnemy(ctx: SimContext, id: number, kind: EnemyKindId, pos: 
     hp,
     maxHp: hp,
     armorReduction: armorReduction(def.armor, ctx.config.floor),
-    damage: Math.round(def.attack.damage * scale.damage * ctx.difficulty.enemyDamage),
+    damage: Math.round(def.attack.damage * scale.damage * ctx.difficulty.enemyDamage * ctx.party.enemyDamage),
     aggro: summoned,
     state: summoned ? "CHASE" : "IDLE",
     ticks: 0,
@@ -73,10 +75,26 @@ export function createInitialState(ctx: SimContext): SimState {
       resource: kit.resource.start === "FULL" ? p.stats.maxResource : 0,
       maxResource: p.stats.maxResource,
       life: "ALIVE",
+      presence: "CONNECTED",
+      reviveProgress: 0,
+      lastReviveTick: -1,
+      downs: 0,
+      revivesGiven: 0,
       action: { kind: "NONE" },
       attackCooldown: 0,
       dodgeCooldown: 0,
-      abilityCooldown: 0,
+      // La simulación vuelve a resolver (y validar) las habilidades: lo que no sea de la clase se descarta.
+      skills: LOADOUT_SLOTS.map((slotId, slot) => {
+        const equipped = p.loadout[slot];
+        const resolved = equipped ? resolveSkill(equipped.skillId, equipped.rank, p.classId) : null;
+        const repeated = p.loadout.slice(0, slot).some((e) => e?.skillId === equipped?.skillId);
+        return resolved && resolved.kind === slotKind(slotId) && !repeated ? resolved : null;
+      }),
+      skillCooldowns: LOADOUT_SLOTS.map(() => 0),
+      potions: Math.max(0, Math.min(CONSUMABLES.HEALTH_POTION.perRun, Math.floor(p.potions))),
+      potionCooldown: 0,
+      uniqueEffects: [...p.uniqueEffects],
+      nextHitBonus: 0,
       invulnerable: 0,
       dodgeBuffer: 0,
       statuses: [],
@@ -89,7 +107,7 @@ export function createInitialState(ctx: SimContext): SimState {
   let boss: SimState["boss"] = null;
   if (layout.boss) {
     const def = BOSS_DEFINITIONS[layout.boss.id];
-    const hp = Math.round(def.health * ctx.difficulty.bossHealth);
+    const hp = Math.round(def.health * ctx.difficulty.bossHealth * ctx.party.bossHealth);
     boss = {
       id: nextId++,
       bossId: def.id,
@@ -99,7 +117,7 @@ export function createInitialState(ctx: SimContext): SimState {
       hp,
       maxHp: hp,
       armorReduction: armorReduction(def.armor, config.floor),
-      damageMultiplier: ctx.difficulty.bossDamage,
+      damageMultiplier: ctx.difficulty.bossDamage * ctx.party.bossDamage,
       aggro: false,
       phase: 0,
       patternIndex: 0,
@@ -125,7 +143,7 @@ export function createInitialState(ctx: SimContext): SimState {
     projectiles: [],
     hazards: [],
     portalOpen: false,
-    summary: { kills: emptyKills(), bossDefeated: false, damageDealt: 0, damageTaken: 0, dodges: 0 },
+    summary: { kills: emptyKills(), bossDefeated: false, damageDealt: 0, damageTaken: 0, dodges: 0, potionsUsed: 0, skillsUsed: 0 },
     events: [],
   };
 }

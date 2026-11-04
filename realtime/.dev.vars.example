@@ -1,0 +1,4 @@
+# Copia a .dev.vars para `npm run dev` (wrangler dev). Mismo valor que REALTIME_SECRET en el .env de Next.js.
+REALTIME_SECRET=cambia-esto-por-un-secreto-de-al-menos-32-caracteres
+APP_URL=http://localhost:3000
+ALLOWED_ORIGINS=

@@ -1,19 +1,24 @@
 import "server-only";
 import { randomInt } from "node:crypto";
-import { type DungeonRun, Prisma } from "@/generated/prisma/client";
+import { type Character, type DungeonRun, Prisma } from "@/generated/prisma/client";
 import { MAX_FLOOR, floorRules } from "@/game/dungeon/floors";
 import { generateFloorLoot } from "@/game/items/loot";
+import { CONSUMABLES, potionsForRun, potionsFoundOnFloor } from "@/game/items/consumables";
+import { emptyGear } from "@/game/items/equipment";
+import { LOADOUT_SLOTS } from "@/game/skills/rules";
 import { applyExperience } from "@/game/progression/experience";
 import { MAX_SEED } from "@/game/random/rng";
 import { computeFloorXp } from "@/game/rewards/experience";
 import { replay } from "@/game/simulation/replay";
-import { SIM_VERSION, type SimConfig } from "@/game/simulation/types";
+import { SIM_VERSION, type SimConfig, type SimPlayerConfig, type SimSummary } from "@/game/simulation/types";
 import { computeCharacterStats } from "@/game/stats/compute";
 import type { ClassId } from "@/game/types";
 import { BALANCE } from "@/game/balance";
 import { affixesSchema } from "@/lib/validation/items";
 import { allocatedSnapshotSchema, type RunOutcome, runOutcomeSchema, type SubmitRunInput } from "@/lib/validation/run";
-import { allocatedFrom } from "@/server/characters/service";
+import { gearSnapshotSchema, loadoutSnapshotSchema } from "@/lib/validation/progression";
+import { allocatedFrom, gearFrom, loadEquippedItems } from "@/server/characters/service";
+import { loadLoadout } from "@/server/skills/service";
 import { db } from "@/server/db";
 import { DomainError } from "@/server/errors";
 import { withSerializableRetry } from "@/server/transactions";
@@ -55,17 +60,63 @@ export function unlockedFloors(highestFloorCleared: number): number[] {
   return Array.from({ length: max }, (_, i) => i + 1);
 }
 
-/** Configuración de simulación reconstruida SOLO con datos del servidor. */
-function buildSimConfig(run: DungeonRun, character: { id: string; name: string; class: ClassId }): SimConfig {
+/**
+ * Jugador de la simulación reconstruido SOLO con datos del servidor: la instantánea tomada al
+ * empezar (nivel, puntos, habilidades equipadas con su rango, bonificación del equipo y pociones).
+ */
+export function playerConfigFromRun(run: DungeonRun, character: { id: string; name: string; class: ClassId }): SimPlayerConfig {
   const allocated = allocatedSnapshotSchema.parse(run.allocatedAtStart);
-  const stats = computeCharacterStats({ classId: character.class, level: run.levelAtStart, allocated });
+  const loadout = run.loadoutAtStart === null ? LOADOUT_SLOTS.map(() => null) : loadoutSnapshotSchema.parse(run.loadoutAtStart);
+  const gear = run.gearAtStart === null ? { bonus: emptyGear(), uniqueEffects: [] } : gearSnapshotSchema.parse(run.gearAtStart);
+  const stats = computeCharacterStats({ classId: character.class, level: run.levelAtStart, allocated, gear: gear.bonus });
   return {
-    version: run.simVersion,
-    seed: run.seed,
-    floor: run.floor,
-    difficulty: run.difficulty,
-    players: [{ id: character.id, name: character.name, classId: character.class, level: run.levelAtStart, stats: stats.derived }],
+    id: character.id,
+    name: character.name,
+    classId: character.class,
+    level: run.levelAtStart,
+    stats: stats.derived,
+    loadout,
+    potions: run.potionsAtStart,
+    uniqueEffects: gear.uniqueEffects,
   };
+}
+
+function buildSimConfig(run: DungeonRun, character: { id: string; name: string; class: ClassId }): SimConfig {
+  return { version: run.simVersion, seed: run.seed, floor: run.floor, difficulty: run.difficulty, players: [playerConfigFromRun(run, character)] };
+}
+
+/**
+ * Instantánea de la progresión de un personaje para un intento nuevo (dentro de una transacción):
+ * cambiar habilidades o equipo después no altera la partida empezada.
+ */
+export async function progressionSnapshot(tx: Prisma.TransactionClient, character: Character) {
+  const [loadout, equipped, potions] = await Promise.all([
+    loadLoadout(tx, character.id, character.class),
+    loadEquippedItems(tx, character.id),
+    tx.consumableStack.findUnique({ where: { characterId_consumableId: { characterId: character.id, consumableId: CONSUMABLES.HEALTH_POTION.id } } }),
+  ]);
+  return {
+    levelAtStart: character.level,
+    allocatedAtStart: allocatedFrom(character),
+    loadoutAtStart: loadoutSnapshotSchema.parse(loadout),
+    gearAtStart: gearSnapshotSchema.parse(gearFrom(equipped)),
+    potionsAtStart: potionsForRun(potions?.quantity ?? 0),
+  };
+}
+
+/**
+ * Suma (o resta) pociones con una única sentencia atómica que respeta el tope y nunca baja de 0.
+ * Se usa dentro de la transacción que cierra el intento.
+ */
+async function adjustPotions(tx: Prisma.TransactionClient, characterId: string, delta: number) {
+  if (delta === 0) return;
+  const potion = CONSUMABLES.HEALTH_POTION;
+  await tx.consumableStack.upsert({
+    where: { characterId_consumableId: { characterId, consumableId: potion.id } },
+    create: { characterId, consumableId: potion.id, quantity: 0 },
+    update: {},
+  });
+  await tx.$executeRaw`UPDATE "ConsumableStack" SET "quantity" = LEAST(${potion.maxStack}::int, GREATEST(0, "quantity" + ${delta}::int)) WHERE "characterId" = ${characterId} AND "consumableId" = ${potion.id}`;
 }
 
 /**
@@ -94,8 +145,7 @@ export async function startRun(userId: string, input: { characterId: string; flo
               difficulty: "NORMAL",
               seed: randomInt(1, MAX_SEED),
               simVersion: SIM_VERSION,
-              levelAtStart: character.level,
-              allocatedAtStart: allocatedFrom(character),
+              ...(await progressionSnapshot(tx, character)),
             },
           });
           return { runId: run.id };
@@ -121,7 +171,13 @@ async function findOwnedRun(userId: string, runId: string) {
 /** Datos para jugar un intento activo propio (o null). */
 export async function getRunForPlay(userId: string, runId: string): Promise<RunPlayView | null> {
   const run = await findOwnedRun(userId, runId);
-  if (!run || run.status !== "ACTIVE") return null;
+  // Los intentos de una expedición se juegan en el servidor de partida, no aquí.
+  if (!run || run.status !== "ACTIVE" || run.expeditionId !== null) return null;
+  if (run.simVersion !== SIM_VERSION) {
+    // Empezado con otras reglas: no se podría validar. Se abandona sin penalización.
+    await abandonRun(userId, run.id);
+    return null;
+  }
   return { id: run.id, characterId: run.characterId, characterName: run.character.name, floor: run.floor, config: buildSimConfig(run, run.character) };
 }
 
@@ -162,6 +218,8 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
     if (existing) return existing;
   }
   if (run.status !== "ACTIVE") throw new DomainError("RUN_CLOSED", "Esta partida ya no está activa.");
+  // Una expedición en grupo la resuelve el servidor de partida: no se acepta una repetición del cliente.
+  if (run.expeditionId !== null) throw new DomainError("EXPEDITION_RUN", "Esta partida se juega en grupo.");
 
   if (run.simVersion !== SIM_VERSION) {
     await abandonRun(userId, run.id);
@@ -183,26 +241,60 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
   }
 
   const { state } = result;
-  const victory = state.status === "VICTORY";
-  const character = await db.character.findFirstOrThrow({ where: { id: run.characterId, userId } });
-  const baseOutcome = {
+  await finalizeRun(run, {
     result: state.status as "VICTORY" | "DEFEAT",
     defeatReason: state.defeatReason,
     ticks: result.ticks,
-    kills: state.summary.kills,
-    bossDefeated: state.summary.bossDefeated,
-    damageDealt: state.summary.damageDealt,
-    damageTaken: state.summary.damageTaken,
-    dodges: state.summary.dodges,
+    summary: state.summary,
+    // Pociones bebidas según la repetición (nunca más de las que llevaba: lo limita la simulación).
+    potionsUsed: Math.min(run.potionsAtStart, state.summary.potionsUsed),
+    lootSeed: run.seed,
+  });
+  return (await getRunResult(userId, run.id)) ?? fail();
+}
+
+/** Resultado ya verificado por el servidor (repetición en solitario o servidor de partida). */
+export interface VerifiedOutcome {
+  result: "VICTORY" | "DEFEAT";
+  defeatReason: "DOWNED" | "TIMEOUT" | null;
+  ticks: number;
+  summary: SimSummary;
+  potionsUsed: number;
+  /** Semilla del botín de este personaje (en grupo, distinta para cada uno). */
+  lootSeed: number;
+}
+
+/**
+ * Cierra un intento activo con un resultado verificado y concede las recompensas.
+ *
+ * Todo se escribe en una transacción con escrituras condicionales y una clave de idempotencia
+ * única: si otra petición ya cerró el intento (o lo repite), no se concede nada más.
+ */
+export async function finalizeRun(run: DungeonRun, verified: VerifiedOutcome): Promise<void> {
+  const character = await db.character.findUniqueOrThrow({ where: { id: run.characterId } });
+  const baseOutcome = {
+    result: verified.result,
+    defeatReason: verified.defeatReason,
+    ticks: verified.ticks,
+    kills: verified.summary.kills,
+    bossDefeated: verified.summary.bossDefeated,
+    damageDealt: verified.summary.damageDealt,
+    damageTaken: verified.summary.damageTaken,
+    dodges: verified.summary.dodges,
+    potionsUsed: Math.max(0, Math.min(run.potionsAtStart, verified.potionsUsed)),
   };
 
-  if (!victory) {
-    const outcome: RunOutcome = { ...baseOutcome, xp: null, levelBefore: character.level, levelAfter: character.level, itemsLost: 0 };
-    await db.dungeonRun.updateMany({
-      where: { id: run.id, status: "ACTIVE" },
-      data: { status: "FAILED", outcome: runOutcomeSchema.parse(outcome), ticks: result.ticks, endedAt: new Date() },
+  if (verified.result !== "VICTORY") {
+    const outcome: RunOutcome = { ...baseOutcome, xp: null, levelBefore: character.level, levelAfter: character.level, itemsLost: 0, potionsFound: 0 };
+    await db.$transaction(async (tx) => {
+      const closed = await tx.dungeonRun.updateMany({
+        where: { id: run.id, status: "ACTIVE" },
+        data: { status: "FAILED", outcome: runOutcomeSchema.parse(outcome), ticks: verified.ticks, endedAt: new Date() },
+      });
+      // Solo quien cierra el intento descuenta las pociones (un reenvío no las descuenta otra vez).
+      if (closed.count === 1) await adjustPotions(tx, character.id, -baseOutcome.potionsUsed);
     });
-    return (await getRunResult(userId, run.id)) ?? fail();
+    return;
   }
 
   const rules = floorRules(run.floor);
@@ -210,16 +302,16 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
     floor: run.floor,
     difficulty: run.difficulty,
     level: run.levelAtStart,
-    kills: state.summary.kills,
+    kills: verified.summary.kills,
     boss: rules.boss,
-    bossDefeated: state.summary.bossDefeated,
+    bossDefeated: verified.summary.bossDefeated,
   });
-  const drops = generateFloorLoot({ seed: run.seed, floor: run.floor, difficulty: run.difficulty, classId: character.class, boss: rules.boss });
+  const drops = generateFloorLoot({ seed: verified.lootSeed, floor: run.floor, difficulty: run.difficulty, classId: character.class, boss: rules.boss });
 
   try {
     await db.$transaction(async (tx) => {
       // 1) Cierra el intento. Si otra petición ya lo cerró, no se concede nada aquí.
-      const closed = await tx.dungeonRun.updateMany({ where: { id: run.id, status: "ACTIVE" }, data: { status: "COMPLETED", ticks: result.ticks, endedAt: new Date() } });
+      const closed = await tx.dungeonRun.updateMany({ where: { id: run.id, status: "ACTIVE" }, data: { status: "COMPLETED", ticks: verified.ticks, endedAt: new Date() } });
       if (closed.count !== 1) throw new AlreadyClosed();
 
       // 2) XP y subida de nivel con las reglas compartidas, escritura condicional sobre el progreso leído.
@@ -238,8 +330,9 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
       if (updated.count !== 1) throw new DomainError("CONFLICT", "El personaje cambió mientras se validaba el piso. Vuelve a enviarlo.");
 
       // 3) Registro idempotente de la recompensa.
+      const idempotencyKey = run.expeditionId ? `exp:${run.expeditionId}:${character.id}` : `run:${run.id}:${character.id}`;
       const grant = await tx.rewardGrant.create({
-        data: { idempotencyKey: `run:${run.id}:${character.id}`, characterId: character.id, runId: run.id, xp: xp.total, levelsGained: progress.levelsGained },
+        data: { idempotencyKey, characterId: character.id, runId: run.id, xp: xp.total, levelsGained: progress.levelsGained },
       });
 
       // 4) Botín, respetando la capacidad del inventario.
@@ -259,14 +352,24 @@ export async function submitRun(userId: string, input: SubmitRunInput): Promise<
         });
       }
 
-      const outcome: RunOutcome = { ...baseOutcome, xp, levelBefore: current.level, levelAfter: progress.level, itemsLost: drops.length - kept.length };
+      // 5) Pociones: se descuentan las bebidas y se suman las encontradas (con tope).
+      const potionsFound = potionsFoundOnFloor(rules.boss !== null);
+      await adjustPotions(tx, character.id, potionsFound - baseOutcome.potionsUsed);
+
+      const outcome: RunOutcome = {
+        ...baseOutcome,
+        xp,
+        levelBefore: current.level,
+        levelAfter: progress.level,
+        itemsLost: drops.length - kept.length,
+        potionsFound,
+      };
       await tx.dungeonRun.update({ where: { id: run.id }, data: { outcome: runOutcomeSchema.parse(outcome) } });
     });
   } catch (error) {
     const duplicate = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
     if (!(error instanceof AlreadyClosed) && !duplicate) throw error;
   }
-  return (await getRunResult(userId, run.id)) ?? fail();
 }
 
 class AlreadyClosed extends Error {}

@@ -5,42 +5,23 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { abandonRunAction, submitRunAction, type SubmitRunResponse } from "@/app/(game)/characters/[id]/runs/actions";
 import { RunResult } from "@/components/dungeon/run-result";
 import { Button, buttonStyles } from "@/components/ui/button";
-import { BALANCE } from "@/game/balance";
 import { BOSS_DEFINITIONS } from "@/game/bosses/definitions";
 import { CLASS_DEFINITIONS } from "@/game/classes/definitions";
 import { getCombatKit } from "@/game/combat/kits";
-import { STATUS_DEFINITIONS } from "@/game/combat/status";
-import { distance } from "@/game/math/vec";
 import { botInput } from "@/game/simulation/bot";
-import { createContext, DT, secondsToTicks } from "@/game/simulation/context";
+import { createContext, DT } from "@/game/simulation/context";
 import { createInitialState } from "@/game/simulation/create";
 import { InputRecorder } from "@/game/simulation/input";
 import { step } from "@/game/simulation/step";
-import type { SimConfig, SimState, SimStatus } from "@/game/simulation/types";
-import type { CombatKit } from "@/game/combat/kits";
+import type { SimConfig, SimStatus } from "@/game/simulation/types";
 import type { RunResultView } from "@/server/dungeon/service";
-import { InputController } from "./controls";
+import { CONSUMABLES } from "@/game/items/consumables";
+import { InputController, POTION_KEY, SKILL_KEYS } from "./controls";
+import { Cooldown, HudBar, type HudSnapshot, nearestEnemyDir, snapshot, subscribeNoop } from "./hud";
 import { GameRenderer } from "./renderer";
 import { TouchControls } from "./touch-controls";
 
 type Phase = "intro" | "playing" | "paused" | "submitting" | "result" | "error";
-
-interface HudSnapshot {
-  hp: number;
-  maxHp: number;
-  resource: number;
-  maxResource: number;
-  attack: number;
-  dodge: number;
-  ability: number;
-  abilityAffordable: boolean;
-  statuses: string[];
-  enemies: number;
-  portalOpen: boolean;
-  seconds: number;
-  boss: { name: string; hp: number; maxHp: number; phase: string; warning: string | null } | null;
-  warning: string | null;
-}
 
 const STEP_MS = DT * 1000;
 
@@ -77,6 +58,8 @@ export function GameClient({
   const player = config.players[0];
   const classDef = CLASS_DEFINITIONS[player.classId];
   const kit = getCombatKit(player.classId);
+  // Habilidades tal como las resuelve la simulación (mismo código): nombre, coste y enfriamiento por hueco.
+  const skills = useMemo(() => createInitialState(ctx).players[0].skills, [ctx]);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -159,7 +142,7 @@ export function GameClient({
       renderer.render(prev, state, Math.min(1, acc / STEP_MS), elapsed / 1000);
       if (now - lastHud > 100) {
         lastHud = now;
-        setHud(snapshot(state, kit));
+        setHud(snapshot(state, kit, skills));
       }
       raf = requestAnimationFrame(frame);
     };
@@ -170,7 +153,7 @@ export function GameClient({
       window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ctx, controller, player.id, autopilot, submit, kit]);
+  }, [ctx, controller, player.id, autopilot, submit, kit, skills]);
 
   useEffect(() => {
     if (!banner) return;
@@ -242,13 +225,26 @@ export function GameClient({
       ) : null}
 
       {/* Enfriamientos */}
-      <div className={`pointer-events-none absolute flex gap-2 ${isTouch ? "left-3 top-32" : "bottom-3 left-1/2 -translate-x-1/2"}`}>
+      <div className={`pointer-events-none absolute flex gap-2 ${isTouch ? "left-3 top-32 max-w-[62vw] flex-wrap" : "bottom-3 left-1/2 -translate-x-1/2"}`}>
         <Cooldown label={kit.basic.name} hint={isTouch ? "" : "Clic / J"} ratio={hud?.attack ?? 0} />
         <Cooldown label="Esquiva" hint={isTouch ? "" : "Espacio"} ratio={hud?.dodge ?? 0} />
-        <Cooldown label={kit.ability.name} hint={isTouch ? "" : "Q"} ratio={hud?.ability ?? 0} disabled={hud ? !hud.abilityAffordable : false} />
+        {skills.map((skill, slot) =>
+          skill ? (
+            <Cooldown
+              key={slot}
+              label={skill.name}
+              hint={isTouch ? "" : SKILL_KEYS[slot].toUpperCase()}
+              ratio={hud?.skills[slot]?.ratio ?? 0}
+              disabled={hud ? !hud.skills[slot]?.affordable : false}
+              ultimate={slot === 3}
+              testId={`hud-skill-${slot}`}
+            />
+          ) : null,
+        )}
+        <Cooldown label={`Poción ×${hud?.potions ?? player.potions}`} hint={isTouch ? "" : POTION_KEY} ratio={hud?.potion ?? 0} disabled={(hud?.potions ?? player.potions) === 0} testId="hud-potions" />
       </div>
 
-      {isTouch && phase === "playing" ? <TouchControls controller={controller} abilityName={kit.ability.name} /> : null}
+      {isTouch && phase === "playing" ? <TouchControls controller={controller} skills={skills.map((s) => s?.name ?? null)} potions={hud?.potions ?? player.potions} /> : null}
 
       {phase !== "playing" ? (
         <div className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-abyss-950/75 p-4 backdrop-blur-sm">
@@ -271,8 +267,21 @@ export function GameClient({
                   <li>
                     <strong className="text-bone-100">Esquivar:</strong> Espacio. Eres invulnerable durante la esquiva
                   </li>
+                  {skills.map((skill, slot) =>
+                    skill ? (
+                      <li key={slot}>
+                        <strong className="text-bone-100">
+                          {skill.name}
+                          {slot === 3 ? " (definitiva)" : ""}:
+                        </strong>{" "}
+                        {SKILL_KEYS[slot].toUpperCase()}
+                        {slot === 0 ? " o clic derecho" : ""}. Cuesta {skill.resourceCost} de {classDef.resource.name.toLowerCase()} · {skill.cooldown} s de enfriamiento
+                      </li>
+                    ) : null,
+                  )}
                   <li>
-                    <strong className="text-bone-100">{kit.ability.name}:</strong> Q o clic derecho. {kit.ability.description}
+                    <strong className="text-bone-100">Poción:</strong> {POTION_KEY}. Llevas {player.potions}; cada una cura el{" "}
+                    {Math.round(CONSUMABLES.HEALTH_POTION.healRatio * 100)} % de tu vida.
                   </li>
                   <li>Las zonas rojas avisan de un ataque. Los enemigos con borde verde están recuperándose: es tu momento.</li>
                 </ul>
@@ -325,81 +334,3 @@ export function GameClient({
   );
 }
 
-function snapshot(state: SimState, kit: CombatKit): HudSnapshot {
-  const me = state.players[0];
-  const boss = state.boss && state.boss.hp > 0 ? state.boss : null;
-  const bossDef = boss ? BOSS_DEFINITIONS[boss.bossId] : null;
-  const cdRatio = (ticks: number, total: number) => (total > 0 ? Math.min(1, ticks / total) : 0);
-  const attackTotal = secondsToTicks(kit.basic.windup + kit.basic.recovery + kit.basic.cooldown);
-  const attackLeft = me.action.kind === "ATTACK" ? me.action.ticks + secondsToTicks(kit.basic.cooldown) : me.attackCooldown;
-  const telegraphing = state.enemies.some((e) => e.state === "WINDUP" && distance(e.pos, me.pos) < 5);
-  return {
-    hp: me.hp,
-    maxHp: me.maxHp,
-    resource: me.resource,
-    maxResource: me.maxResource,
-    attack: cdRatio(attackLeft, attackTotal),
-    dodge: cdRatio(me.dodgeCooldown, secondsToTicks(BALANCE.combat.dodge.cooldown)),
-    ability: cdRatio(me.abilityCooldown, secondsToTicks(kit.ability.cooldown)),
-    abilityAffordable: me.resource >= kit.ability.cost,
-    statuses: me.statuses.map((s) => STATUS_DEFINITIONS[s.id].name),
-    enemies: state.enemies.length,
-    portalOpen: state.portalOpen,
-    seconds: Math.floor(state.tick * DT),
-    boss:
-      boss && bossDef && boss.aggro
-        ? {
-            name: bossDef.name,
-            hp: boss.hp,
-            maxHp: boss.maxHp,
-            phase: bossDef.phases[boss.phase].name,
-            warning: boss.state === "WINDUP" && boss.current ? bossDef.attacks[boss.current].name : null,
-          }
-        : null,
-    warning: telegraphing ? "Ataque inminente" : null,
-  };
-}
-
-const subscribeNoop = () => () => undefined;
-
-function nearestEnemyDir(state: SimState): { x: number; y: number } | null {
-  const me = state.players[0];
-  let best: { x: number; y: number } | null = null;
-  let bestD = 9;
-  const targets = [...state.enemies.map((e) => e.pos), ...(state.boss && state.boss.hp > 0 ? [state.boss.pos] : [])];
-  for (const p of targets) {
-    const d = distance(me.pos, p);
-    if (d < bestD) {
-      bestD = d;
-      best = { x: p.x - me.pos.x, y: p.y - me.pos.y };
-    }
-  }
-  return best;
-}
-
-function HudBar({ label, value, max, color, testId }: { label: string; value: number; max: number; color: string; testId?: string }) {
-  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
-  return (
-    <div className="mt-1.5">
-      <div className="flex justify-between text-[11px] text-bone-300">
-        <span>{label}</span>
-        <span className="tabular-nums" data-testid={testId}>
-          {value} / {max}
-        </span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full border border-abyss-600 bg-abyss-950">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
-      </div>
-    </div>
-  );
-}
-
-function Cooldown({ label, hint, ratio, disabled }: { label: string; hint: string; ratio: number; disabled?: boolean }) {
-  return (
-    <div className={`panel relative w-20 overflow-hidden rounded-md px-2 py-1.5 text-center text-[11px] sm:w-24 ${disabled ? "opacity-50" : ""}`}>
-      <div className="absolute inset-x-0 bottom-0 bg-abyss-950/80" style={{ height: `${ratio * 100}%` }} />
-      <p className="relative truncate font-semibold">{label}</p>
-      {hint ? <p className="relative text-bone-500">{hint}</p> : null}
-    </div>
-  );
-}

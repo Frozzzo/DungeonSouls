@@ -1,4 +1,6 @@
+import { BALANCE } from "@/game/balance";
 import { BOSS_DEFINITIONS } from "@/game/bosses/definitions";
+import { secondsToTicks } from "@/game/simulation/context";
 import { CLASS_DEFINITIONS } from "@/game/classes/definitions";
 import { getCombatKit } from "@/game/combat/kits";
 import { hasStatus } from "@/game/combat/status";
@@ -90,7 +92,14 @@ export class GameRenderer {
           this.floaters.push({ text: "esquiva", color: "#9ad1ff", pos: { x: e.pos.x, y: e.pos.y - 0.7 }, age: 0, life: 0.7, size: 13 });
           break;
         case "ABILITY":
-          this.bursts.push({ pos: e.pos, color: "rgba(240,160,75,", age: 0, life: 0.45, radius: 2.4 });
+          this.bursts.push({ pos: e.pos, color: e.slot === 3 ? "rgba(224,68,58," : "rgba(240,160,75,", age: 0, life: e.slot === 3 ? 0.7 : 0.45, radius: e.slot === 3 ? 3.6 : 2.4 });
+          break;
+        case "POTION":
+          this.floaters.push({ text: `+${e.amount}`, color: "#6fe3a1", pos: { x: e.pos.x, y: e.pos.y - 0.6 }, age: 0, life: 1.1, size: 17 });
+          this.bursts.push({ pos: e.pos, color: "rgba(217,68,58,", age: 0, life: 0.5, radius: 1 });
+          break;
+        case "ABSORBED":
+          this.floaters.push({ text: `${e.amount} absorbido`, color: "#78beff", pos: { x: e.pos.x, y: e.pos.y - 0.7 }, age: 0, life: 0.8, size: 13 });
           break;
         case "ENEMY_DIED":
           this.bursts.push({ pos: e.pos, color: "rgba(180,160,220,", age: 0, life: 0.5, radius: 1.2 });
@@ -181,6 +190,8 @@ export class GameRenderer {
       }
       this.drawFacing(p, e.facing, e.radius, "rgba(0,0,0,0.7)");
       if (e.hp < e.maxHp) this.drawBar(p, e.radius, e.hp / e.maxHp, "#d9443a");
+      if (hasStatus(e.statuses, "STUN")) this.drawTag(p, e.radius, "aturdido", "#ffd166");
+      else if (hasStatus(e.statuses, "SLOW")) this.drawTag(p, e.radius, "ralentizado", "#9ad1ff");
     }
 
     // Jefe
@@ -230,6 +241,17 @@ export class GameRenderer {
         ctx.lineWidth = 3;
         ctx.stroke();
       }
+      if (hasStatus(pl.statuses, "BARRIER")) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (pl.radius + 0.38) * s, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(120,190,255,0.85)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      if (hasStatus(pl.statuses, "EMPOWERED")) {
+        ctx.shadowColor = "rgba(224,68,58,0.9)";
+        ctx.shadowBlur = 14;
+      }
       ctx.globalAlpha = pl.invulnerable > 0 ? 0.55 : pl.life === "ALIVE" ? 1 : 0.35;
       ctx.beginPath();
       ctx.arc(p.x, p.y, pl.radius * s, 0, Math.PI * 2);
@@ -239,7 +261,32 @@ export class GameRenderer {
       ctx.strokeStyle = "#ede6d6";
       ctx.stroke();
       ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
       this.drawFacing(p, pl.facing, pl.radius, "#07060a");
+      // En grupo: nombre de los aliados, derribados con su reanimación y desconectados.
+      if (curr.players.length > 1) {
+        if (pl.id !== this.localPlayerId) this.drawLabel(p, pl.radius, pl.name, "#ede6d6");
+        if (pl.life === "DOWNED") {
+          const total = secondsToTicks(BALANCE.multiplayer.revive.seconds);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, BALANCE.multiplayer.revive.radius * s, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(95,201,167,0.35)";
+          ctx.setLineDash([6, 6]);
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (pl.reviveProgress > 0) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, (pl.radius + 0.3) * s, -Math.PI / 2, -Math.PI / 2 + (Math.min(1, pl.reviveProgress / total) * Math.PI * 2));
+            ctx.strokeStyle = "#5fc9a7";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+          }
+          this.drawTag(p, pl.radius, pl.presence === "LEFT" ? "abandonó" : "derribado · mantén G", "#5fc9a7");
+        } else if (pl.presence === "DISCONNECTED") {
+          this.drawTag(p, pl.radius, "desconectado", "#9a96a8");
+        }
+      }
       if (hasStatus(pl.statuses, "SLOW")) this.drawTag(p, pl.radius, "ralentizado", "#9ad1ff");
       if (hasStatus(pl.statuses, "STUN")) this.drawTag(p, pl.radius, "aturdido", "#ffd166");
       // Arco del ataque cuerpo a cuerpo
@@ -421,6 +468,14 @@ export class GameRenderer {
     ctx.fillRect(x - 1, y - 1, w + 2, 6);
     ctx.fillStyle = color;
     ctx.fillRect(x, y, w * Math.max(0, ratio), 4);
+  }
+
+  private drawLabel(p: Vec, radius: number, text: string, color: string) {
+    const ctx = this.ctx;
+    ctx.font = "600 11px var(--font-inter), system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = color;
+    ctx.fillText(text, p.x, p.y - radius * this.scale - 8);
   }
 
   private drawTag(p: Vec, radius: number, text: string, color: string) {

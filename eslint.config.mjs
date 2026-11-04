@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     "src/generated/**",
     "playwright-report/**",
     "test-results/**",
+    "realtime/node_modules/**",
+    "realtime/.wrangler/**",
   ]),
 ]);
 

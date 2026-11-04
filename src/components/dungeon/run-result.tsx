@@ -50,6 +50,13 @@ export function RunResult({ result }: { result: RunResultView }) {
         </p>
       ) : null}
 
+      {outcome.potionsUsed > 0 || outcome.potionsFound > 0 ? (
+        <p className="text-center text-xs text-bone-300" data-testid="run-potions">
+          Pociones bebidas: {outcome.potionsUsed}
+          {outcome.potionsFound > 0 ? ` · encontradas: ${outcome.potionsFound}` : ""}
+        </p>
+      ) : null}
+
       {kills.length > 0 ? (
         <p className="text-center text-xs text-bone-300">
           {kills.map((k) => `${ENEMY_DEFINITIONS[k].name} ×${outcome.kills[k]}`).join(" · ")}

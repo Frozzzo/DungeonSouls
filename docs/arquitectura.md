@@ -202,12 +202,26 @@ El combate cooperativo autoritativo necesita un **proceso que mantenga el estado
 6. **Desconexión y reconexión.** Si un jugador se desconecta, su personaje pasa a `DISCONNECTED` (los enemigos dejan de priorizarlo y no puede ser derribado durante una gracia configurable). Puede reconectar con un ticket nuevo y recibe una instantánea completa. El estado se guarda en el SQLite del objeto cada pocos segundos para recuperarse si la instancia se reinicia.
 7. **Resultados.** Al terminar un encuentro, el objeto envía a `POST /api/internal/expeditions/<id>/results` un resultado firmado con clave idempotente por personaje. Next.js lo aplica en una transacción (XP con `applyExperience`, objetos, `RewardGrant` único). Si la petición se repite, la restricción única evita duplicados y se devuelve el mismo resultado.
 
+### 5.3.1 Lo implementado (Fase 4)
+
+Diferencias y concreciones respecto al plan anterior:
+
+- **Participantes = `DungeonRun`.** Cada miembro tiene un intento (`expeditionId`, `partySlot`) con la misma instantánea de progresión que el juego en solitario; así se reutilizan el cierre condicional, las pociones, el botín y el historial. La clave idempotente es `exp:<expedición>:<personaje>`. Un intento de expedición nunca se acepta por repetición del cliente.
+- **Ticket mínimo.** El ticket (HMAC, 60 s, nonce de un solo uso) lleva expedición, usuario y personaje. Las estadísticas no viajan en él: el Durable Object pide la configuración de la sala a `GET /api/internal/expeditions/<id>/config` con una petición firmada (método, ruta, momento y cuerpo; desfase máximo 60 s).
+- **Sala pura.** `src/realtime/room.ts` contiene toda la lógica de la sala (espera inicial de 20 s, límite de mensajes, botones acumulados entre ticks, periodo de gracia de 90 s, pausa si no hay nadie, guardado y restauración) sin depender de Cloudflare; `realtime/src/index.ts` solo la conecta con WebSockets, almacenamiento y alarmas. Se prueba en Node con relojes falsos.
+- **Instantáneas completas a 10 Hz** (redondeadas a milésimas, sin las habilidades, que llegan una vez). Los deltas quedan como optimización si el ancho de banda lo pide. **Sin predicción local todavía:** el cliente interpola entre las dos últimas instantáneas, así que el movimiento propio tiene ~100 ms más la latencia de red. Es lo siguiente a mejorar si se nota en móvil.
+- **Reglas nuevas en la simulación** (`SIM_VERSION` 3): reanimar manteniendo `G` 3 s junto al aliado (vuelve con el 40 % de vida y 1,5 s de invulnerabilidad); estado de conexión por jugador (desconectado = quieto, intocable y no es objetivo; `LEFT` definitivo); derrota cuando todos los que siguen están derribados; escalado por jugador adicional (+60 % vida de enemigos, +75 % del jefe, +5 % daño). Con un jugador todo es idéntico a antes.
+- **Recompensas** cuando termina el piso (un encuentro por expedición en esta fase). Quien abandona o no vuelve a tiempo no recibe nada; quien está desconectado pero dentro de la gracia sí.
+- **Expediciones atascadas:** el líder puede terminarlas desde la sala del grupo; un resultado tardío se ignora.
+
 ### 5.4 Por qué cumple los requisitos de la especificación
 
 - No depende de memoria global de Vercel: el estado de partida vive en un objeto con identidad única y almacenamiento propio.
 - Tolera reconexiones y múltiples instancias de Vercel: Vercel solo emite tickets y aplica resultados, ambos sin estado.
 - El cliente nunca informa daño, XP ni botín.
 - Las recompensas son idempotentes en Postgres.
+
+Criterios de la Fase 4 y dónde se prueban: entrada/salida de grupo (`tests/integration/multiplayer.test.ts`), 2+ clientes con el mismo estado y reconexión con instantánea (`tests/unit/realtime.test.ts`), acciones inválidas rechazadas (`tests/unit/realtime.test.ts`), recompensa repetida sin duplicar (`tests/integration/multiplayer.test.ts`), y la partida completa con dos navegadores y el Worker real (`tests/e2e/multiplayer.spec.ts`).
 
 ---
 

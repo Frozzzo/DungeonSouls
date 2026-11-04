@@ -32,6 +32,30 @@ Garantías ya implementadas:
 
 Un personaje tiene como máximo un intento activo: empezar otro abandona el anterior (transacción serializable con reintento). Cuando lleguen grupos (Fase 4), `DungeonRun` se generaliza en `Expedition` + `Encounter`; las recompensas ya usan el mismo patrón idempotente.
 
+## Fase 3 (implementado)
+
+| Modelo | Propósito | Notas |
+| --- | --- | --- |
+| `CharacterSkill` | Rango por habilidad aprendida | `@@unique([characterId, skillId])`, `CHECK rank >= 1`; el tope (`maxRank`) lo valida el servicio con escritura condicional |
+| `CharacterLoadoutSlot` | Habilidades equipadas | `@@unique([characterId, slot])` y `@@unique([characterId, skillId])`: máximo 4 y sin repetir |
+| `EquipmentSlot` | Objeto puesto en cada hueco | `@@unique([characterId, slot])`, `itemInstanceId @unique`; FK a `ItemInstance` con `NO ACTION`: un objeto equipado no se puede borrar |
+| `ConsumableStack` | Pociones | Tope por tipo; `CHECK quantity >= 0`; el ajuste al cerrar un intento es una sola sentencia con `LEAST/GREATEST` |
+| `MaterialStack` | Polvo abisal (desmontar) | `CHECK quantity >= 0` |
+| `DungeonRun.loadoutAtStart`, `gearAtStart`, `potionsAtStart` | Instantánea de la progresión al empezar | Validadas con Zod; cambiar habilidades o equipo no altera una partida empezada |
+
+La migración da a los personajes existentes su habilidad inicial equipada, 1 punto de habilidad y 3 pociones, y abandona los intentos activos (cambió `SIM_VERSION`).
+
+## Fase 4 (implementado)
+
+| Modelo | Propósito | Notas |
+| --- | --- | --- |
+| `Party` | Grupo con código de 6 caracteres sin ambigüedades | `status` OPEN / IN_EXPEDITION / CLOSED; el líder pasa al miembro más antiguo si se va |
+| `PartyMember` | Miembro con su personaje y "listo" | `userId` y `characterId` únicos: un usuario y un personaje solo están en un grupo; máximo 4 comprobado en transacción serializable |
+| `Expedition` | Un piso jugado en grupo | Piso, dificultad, semilla, `simVersion` y `playerCount` fijos al crearla; `result` guarda el resultado firmado recibido |
+| `DungeonRun.expeditionId`, `partySlot` | El participante | `@@unique([expeditionId, partySlot])` y `@@unique([expeditionId, characterId])`; hace el papel de `ExpeditionParticipant` del diseño inicial |
+
+`Encounter` y `CombatLog` no se crean todavía: en esta fase una expedición es un piso (un encuentro). La migración abandona los intentos activos porque cambió `SIM_VERSION`.
+
 ## Diseño completo (fases 2–5)
 
 ```

@@ -14,6 +14,8 @@ export const BALANCE = {
     startingStatPoints: 5,
     statPointsPerLevel: 3,
     skillPointsPerLevel: 1,
+    /** Puntos de habilidad al crear un personaje (además de la habilidad inicial de su clase). */
+    startingSkillPoints: 1,
   },
 
   attributes: {
@@ -80,6 +82,28 @@ export const BALANCE = {
     bonusBossItems: 1,
     /** Capacidad del inventario. Si está lleno, el botín sobrante se pierde (se avisa). */
     inventoryCapacity: 60,
+  },
+
+  consumables: {
+    potionMaxStack: 5,
+    potionsPerRun: 3,
+    startingPotions: 3,
+    potionCraftCost: 12,
+    potionsPerFloorClear: 1,
+    bonusBossPotions: 1,
+    /** Polvo abisal al desmontar, por rareza (a nivel de objeto 1). */
+    dismantleYield: { COMMON: 2, UNCOMMON: 4, RARE: 8, EPIC: 15, LEGENDARY: 30, MYTHIC: 60 },
+  },
+
+  multiplayer: {
+    maxPartySize: 4,
+    /** Escalado por jugador adicional (con 1 jugador todo vale 1): vida y daño de enemigos y jefes. */
+    enemyHealthPerExtraPlayer: 0.6,
+    enemyDamagePerExtraPlayer: 0.05,
+    bossHealthPerExtraPlayer: 0.75,
+    bossDamagePerExtraPlayer: 0.05,
+    /** Reanimación: mantener pulsado junto al aliado derribado. */
+    revive: { seconds: 3, radius: 1.4, healthRatio: 0.4, invulnerability: 1.5 },
   },
 
   characters: {
