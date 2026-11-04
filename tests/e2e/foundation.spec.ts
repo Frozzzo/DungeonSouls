@@ -42,6 +42,8 @@ test("flujo completo: registro, personaje, estadísticas, cierre e inicio de ses
   await page.getByRole("button", { name: "Crear personaje" }).click();
 
   await expect(page.getByTestId("character-name")).toHaveText(name);
+  // Sin desbordamiento horizontal (en móvil la cabecera debe caber).
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page.getByTestId("character-level")).toHaveText("Nivel 1");
   await expect(page.getByTestId("stat-points")).toHaveText("5");
 
